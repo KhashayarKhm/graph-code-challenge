@@ -10,6 +10,10 @@ type Server struct {
 	router *gin.Engine
 }
 
+func New() *Server {
+	return &Server{}
+}
+
 func (s *Server) Setup() {
 	s.router = gin.Default()
 
