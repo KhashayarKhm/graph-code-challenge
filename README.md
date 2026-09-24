@@ -1,8 +1,69 @@
-# graph-code-challenge
+# Task Manager
 
-Task Manager microservice — Golang developer hiring evaluation for GRAPH.
+A production-minded Task Manager REST API written in Go for the GRAPH backend
+engineering challenge.
 
-Work in progress. Architecture, API reference and design trade-offs are still to be written.
+## Table of contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Running with Docker](#running-with-docker)
+- [Configuration](#configuration)
+- [API reference](#api-reference)
+- [API documentation](#api-documentation)
+- [Caching](#caching)
+- [Running the tests](#running-the-tests)
+- [Observability](#observability)
+- [Load testing and profiling](#load-testing-and-profiling)
+- [Migrations](#migrations)
+- [Trade-offs and limitations](#trade-offs-and-limitations)
+
+## Overview
+
+The service provides create, read, list, partial-update and soft-delete operations
+for tasks. It uses Gin for HTTP delivery, PostgreSQL through pgx for persistence,
+and an optional Redis cache-aside decorator. It also includes cursor pagination,
+status and assignee filters, Swagger documentation, Prometheus metrics,
+request-correlated JSON logging, graceful shutdown, integration tests, a k6 load
+scenario and opt-in pprof endpoints.
+
+Task statuses are `pending`, `in_progress` and `done`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Client[HTTP client] --> Middleware[HTTP middleware]
+    Middleware --> Handler[Delivery / Gin handlers]
+    Handler --> Validator[Request validator]
+    Handler --> Service[Task service]
+    Service --> Contract[Repository interface]
+    Contract --> Cache[Redis cache decorator]
+    Cache --> Postgres[PostgreSQL adapter]
+    Contract -. Redis disabled .-> Postgres
+    Postgres --> DB[(PostgreSQL)]
+    Cache -. optional .-> Redis[(Redis)]
+```
+
+The dependency direction follows the interface/adapter approach:
+
+- `delivery/httpserver` owns HTTP concerns: routing, binding, status codes,
+  middleware and response serialization.
+- `validator/taskvalidator` validates transport parameters without knowing about
+  HTTP or persistence.
+- `service/taskservice` contains application behavior and declares the
+  `Repository` interface it consumes.
+- `repository/postgres/postgrestask` implements that interface with pgx.
+- `repository/redis/redistask` implements the same interface as a decorator and
+  delegates cache misses and all writes to the wrapped repository.
+- `entity` contains dependency-free domain types and error classes; `param`
+  contains service request and response shapes.
+- `cmd/api` is the composition root. It selects concrete adapters and injects
+  them into the layers above.
+
+This keeps the application service independent of Gin, pgx, Redis and the
+concrete logging implementation. Replacing one of those adapters is localized
+to its package and the composition root.
 
 ## Running with Docker
 
@@ -31,6 +92,174 @@ compose healthcheck cannot be a `wget`/`curl` one-liner; a third tiny binary,
 
 Rebuild after a code change with `docker compose up --build -d api`, and tear the
 stack down with `docker compose down` (add `-v` to drop the database volume too).
+
+## Configuration
+
+Configuration is read from the process environment. For local runs, variables
+can also be loaded from `.env`; copy [`.env.example`](.env.example) as a starting
+point. Existing environment variables take precedence over values in that file.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ENV_FILE` | `.env` | Optional dotenv file to load. |
+| `APP_MODE` | `development` | One of `development`, `production` or `test`. |
+| `HTTP_PORT` | `8080` | Public HTTP server port. |
+| `DATABASE_URL` | required | PostgreSQL connection URL. |
+| `REDIS_URL` | empty | Redis connection URL; an empty value disables caching. |
+| `REDIS_TTL` | `1m` | Cache lifetime as a Go duration, such as `60s` or `5m`. |
+| `PPROF_ENABLED` | `false` | Starts the private profiling server when true. |
+| `PPROF_PORT` | `6060` | Profiling port; it must differ from `HTTP_PORT`. |
+
+To run the API directly after starting PostgreSQL and applying migrations:
+
+```sh
+cp .env.example .env
+go run ./cmd/api
+```
+
+## API reference
+
+The task API is rooted at `http://localhost:8080/api/v1`. All request and
+response bodies are JSON. A task has this shape:
+
+```json
+{
+  "id": 42,
+  "title": "Document the API",
+  "description": "Add examples to the README",
+  "status": "in_progress",
+  "assignee": "alex"
+}
+```
+
+| Field | Rules |
+| --- | --- |
+| `title` | Required when creating; 1–200 characters. |
+| `description` | Optional; at most 2,000 characters. |
+| `status` | `pending`, `in_progress` or `done`; defaults to `pending` when creating. |
+| `assignee` | Optional; at most 100 characters. |
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/v1/tasks` | Create a task. |
+| `GET` | `/api/v1/tasks/:id` | Get one non-deleted task. |
+| `GET` | `/api/v1/tasks` | List tasks with cursor pagination and optional filters. |
+| `PATCH` | `/api/v1/tasks/:id` | Update only the supplied fields. |
+| `DELETE` | `/api/v1/tasks/:id` | Soft-delete a task. |
+| `GET` | `/healthz` | Service health check. |
+| `GET` | `/metrics` | Prometheus exposition endpoint. |
+
+### Create a task
+
+```sh
+curl -i -X POST http://localhost:8080/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Document the API",
+    "description": "Add examples to the README",
+    "assignee": "alex"
+  }'
+```
+
+The response is `201 Created`; an omitted status becomes `pending`:
+
+```json
+{
+  "task": {
+    "id": 42,
+    "title": "Document the API",
+    "description": "Add examples to the README",
+    "status": "pending",
+    "assignee": "alex"
+  }
+}
+```
+
+### Get a task
+
+Replace `42` in these examples with an ID returned by the create endpoint.
+
+```sh
+curl http://localhost:8080/api/v1/tasks/42
+```
+
+The response is `200 OK` and uses the same `{"task": {...}}` envelope as the
+create endpoint.
+
+### List and filter tasks
+
+```sh
+curl 'http://localhost:8080/api/v1/tasks?status=pending&assignee=alex&limit=20'
+```
+
+Results are ordered by descending ID. `limit` defaults to 20 and values above 50
+are clamped to 50. When `has_more` is true, pass `next_cursor` as the next
+request's `cursor`:
+
+```json
+{
+  "tasks": [
+    {
+      "id": 42,
+      "title": "Document the API",
+      "description": "Add examples to the README",
+      "status": "pending",
+      "assignee": "alex"
+    }
+  ],
+  "next_cursor": 42,
+  "has_more": true
+}
+```
+
+```sh
+curl 'http://localhost:8080/api/v1/tasks?status=pending&assignee=alex&limit=20&cursor=42'
+```
+
+`next_cursor` is `0` when there is no next page.
+
+### Partially update a task
+
+PATCH distinguishes an omitted field from a supplied field. Only fields present
+in the body are changed; at least one field must be supplied.
+
+```sh
+curl -i -X PATCH http://localhost:8080/api/v1/tasks/42 \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"done","assignee":"sam"}'
+```
+
+The response is `200 OK` with the updated task in the `task` envelope.
+
+### Delete a task
+
+```sh
+curl -i -X DELETE http://localhost:8080/api/v1/tasks/42
+```
+
+The response is `204 No Content`. Deletion is soft: the row remains in
+PostgreSQL with `deleted_at` set, but subsequent get, update and delete requests
+treat it as missing and list requests exclude it.
+
+### Error responses
+
+Invalid input returns `400 Bad Request`. Field-level validation errors use a
+stable envelope:
+
+```json
+{
+  "message": "invalid input",
+  "errors": {
+    "title": "title is required",
+    "status": "status must be one of: pending, in_progress, done"
+  }
+}
+```
+
+Malformed JSON returns `{"message":"request body is not valid JSON"}`, an
+unknown or deleted task returns `404` with `{"message":"task not found"}`, and
+unexpected failures return `500` with `{"message":"internal server error"}`.
+Internal error details are logged and are not exposed to clients.
 
 ## API documentation
 
@@ -97,6 +326,15 @@ ID and cache operation. Invalidation runs on `context.WithoutCancel`, so a clien
 that disconnects the instant after its write still gets its stale entries
 dropped.
 
+The non-deleted task count is cached separately as `tasks:count`. On a miss, the
+Redis decorator acquires a short-lived `SET NX` lock, checks the key again, reads
+PostgreSQL once and stores the result with a TTL. Successful creates and deletes
+take the same lock and atomically increment or decrement an existing count. If
+the key has expired, writes leave it absent so the next count read rebuilds it
+from PostgreSQL instead of guessing a baseline. A token-checked Lua release
+prevents one lock owner from releasing another owner's expired-and-reacquired
+lock.
+
 ### When this is the wrong design
 
 Retiring every page on every write is deliberate over-invalidation, so the list
@@ -155,9 +393,12 @@ make coverage
 
 ## Observability
 
-Prometheus metrics are exposed at `GET /metrics`. Request counters and latency
-histograms are accumulated in process memory, while `tasks_count` reads the
-current non-deleted task count from Postgres when the endpoint is scraped.
+Prometheus metrics are exposed at `GET /metrics`. Request counters, latency
+histograms and `tasks_count` are served from process memory, so scraping metrics
+does not execute a database query. A background worker refreshes `tasks_count`
+every 15 seconds through the repository interface and retains the last successful
+value when a refresh fails. With Redis enabled, that repository count is served
+from the cached counter described above; a cache miss falls back to PostgreSQL.
 
 ```sh
 curl http://localhost:8080/metrics
@@ -256,3 +497,25 @@ go run ./cmd/migrate version  # print the applied version
 
 The SQL is embedded in the binary, so the command is self-contained. It reads
 `DATABASE_URL` from `.env` or the environment; `-database` overrides it.
+
+## Trade-offs and limitations
+
+| Decision | Consequence |
+| --- | --- |
+| Consumer-owned repository interface | The service defines only the persistence operations it needs. PostgreSQL and Redis remain replaceable adapters, at the cost of a little explicit wiring in `cmd/api`. |
+| pgx without an ORM | SQL and query behavior stay visible and controllable, but schema/query changes are maintained manually rather than generated from models. |
+| Hand-written validation | The current rule set stays small and dependency-free. A larger set of reusable or database-backed rules would justify a validation library. |
+| Manual embedded migrations | Every environment runs the same migration files, and API replicas do not race during startup. Deployment must deliberately run `/migrate up`. Applied migration files must remain immutable. |
+| Soft deletion | Deleted tasks disappear from API operations and metrics without destroying data. A production system would need a retention or purge job to prevent indefinite table growth. |
+| String-backed status column | Adding a new status requires an application change rather than a PostgreSQL enum migration. Direct database writes can bypass application validation. |
+| No audit timestamps in API responses | `created_at`, `updated_at` and `deleted_at` remain persistence details, keeping the domain/API small but making them unavailable to clients. |
+| Generation-based list cache invalidation | One Redis increment invalidates every cached page safely, but over-invalidates unrelated filters and performs poorly for write-heavy workloads. |
+| Background-refreshed task gauge | Prometheus scrapes never query PostgreSQL, and the last successful value survives a temporary refresh failure. The metric can lag the source of truth by up to the 15-second refresh interval. |
+| Request-ID correlation | Logs for one request can be located without operating a tracing backend. This is not distributed tracing and provides no spans, sampling or cross-service propagation. |
+
+Authentication and authorization are intentionally out of scope for this
+challenge. The service also permits any transition between valid task statuses;
+a workflow that requires `pending → in_progress → done` should enforce that
+state machine in the service layer. Rate limiting, request-size limits and a
+hard-delete retention process would also be required before exposing the API to
+untrusted production traffic.
