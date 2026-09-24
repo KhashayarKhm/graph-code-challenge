@@ -12,7 +12,7 @@ type Repository interface {
 	Create(ctx context.Context, task entity.Task) (entity.Task, error)
 	GetByID(ctx context.Context, id int64) (entity.Task, error)
 	List(ctx context.Context, req param.ListTasksRequest) ([]entity.Task, error)
-	Update(ctx context.Context, task entity.Task) (entity.Task, error)
+	Update(ctx context.Context, req param.UpdateTaskRequest) (entity.Task, error)
 	Delete(ctx context.Context, id int64) error
 	Count(ctx context.Context) (int64, error)
 }
@@ -85,15 +85,7 @@ func (s Service) List(ctx context.Context, req param.ListTasksRequest) (param.Li
 }
 
 func (s Service) Update(ctx context.Context, req param.UpdateTaskRequest) (param.UpdateTaskResponse, error) {
-	task := entity.Task{
-		ID:          req.ID,
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      req.Status,
-		Assignee:    req.Assignee,
-	}
-
-	updated, err := s.repo.Update(ctx, task)
+	updated, err := s.repo.Update(ctx, req)
 	if err != nil {
 		return param.UpdateTaskResponse{}, fmt.Errorf("taskservice: update task: %w", err)
 	}

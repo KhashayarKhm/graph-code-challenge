@@ -17,6 +17,7 @@ const (
 	MsgStatusRequired  = "status is required"
 	MsgStatusInvalid   = "status must be one of: %s"
 	MsgCursorNegative  = "cursor must not be negative"
+	MsgUpdateEmpty     = "at least one field must be provided"
 )
 
 type Validator struct{}
@@ -124,10 +125,28 @@ func (v Validator) ValidateUpdateRequest(req param.UpdateTaskRequest) (map[strin
 	fields := make(map[string]string)
 
 	set(fields, "id", checkID(req.ID))
-	set(fields, "title", checkTitle(req.Title))
-	set(fields, "description", checkDescription(req.Description))
-	set(fields, "assignee", checkAssignee(req.Assignee))
-	set(fields, "status", checkStatus(req.Status, true))
+
+	if req.IsEmpty() {
+		set(fields, "body", MsgUpdateEmpty)
+
+		return result(fields)
+	}
+
+	if req.Title != nil {
+		set(fields, "title", checkTitle(*req.Title))
+	}
+
+	if req.Description != nil {
+		set(fields, "description", checkDescription(*req.Description))
+	}
+
+	if req.Assignee != nil {
+		set(fields, "assignee", checkAssignee(*req.Assignee))
+	}
+
+	if req.Status != nil {
+		set(fields, "status", checkStatus(*req.Status, true))
+	}
 
 	return result(fields)
 }
