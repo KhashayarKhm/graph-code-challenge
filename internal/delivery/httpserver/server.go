@@ -15,6 +15,7 @@ import (
 	"graph-code-challenge/internal/config"
 	"graph-code-challenge/internal/delivery/httpserver/middleware"
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
+	"graph-code-challenge/internal/logger"
 )
 
 const (
@@ -37,25 +38,27 @@ type Server struct {
 	config      config.Config
 	taskHandler taskhandler.Handler
 	metrics     Metrics
+	logger      logger.Logger
 	router      *gin.Engine
 	httpServer  *http.Server
 }
 
-func New(cfg config.Config, taskHandler taskhandler.Handler, metrics Metrics) *Server {
-	return &Server{config: cfg, taskHandler: taskHandler, metrics: metrics}
+func New(cfg config.Config, taskHandler taskhandler.Handler, metrics Metrics, log logger.Logger) *Server {
+	return &Server{config: cfg, taskHandler: taskHandler, metrics: metrics, logger: log}
 }
 
 func (s *Server) Setup() {
-	if s.config.AppMode == config.AppModeProduction {
+	if s.config.AppMode == config.AppModeTest {
+		gin.SetMode(gin.TestMode)
+	} else {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
 	s.router = gin.New()
 	s.router.Use(
-		gin.LoggerWithConfig(gin.LoggerConfig{
-			SkipPaths: []string{"/metrics"},
-		}),
-		gin.Recovery(),
+		middleware.RequestID(),
+		middleware.RequestLogger(s.logger),
+		middleware.Recovery(s.logger),
 	)
 
 	s.router.GET("/metrics", gin.WrapH(s.metrics.Handler()))

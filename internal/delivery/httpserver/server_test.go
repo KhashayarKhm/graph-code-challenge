@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,13 @@ import (
 
 type metricsStub struct{}
 
+type loggerStub struct{}
+
+func (loggerStub) Debug(context.Context, string, ...any) {}
+func (loggerStub) Info(context.Context, string, ...any)  {}
+func (loggerStub) Warn(context.Context, string, ...any)  {}
+func (loggerStub) Error(context.Context, string, ...any) {}
+
 func (metricsStub) ObserveRequest(string, string, string, time.Duration) {}
 
 func (metricsStub) Handler() http.Handler {
@@ -28,6 +36,7 @@ func TestSwaggerEndpoints(t *testing.T) {
 		config.Config{AppMode: config.AppModeTest, HTTPPort: 8080},
 		taskhandler.Handler{},
 		metricsStub{},
+		loggerStub{},
 	)
 	server.Setup()
 

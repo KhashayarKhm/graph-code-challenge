@@ -95,6 +95,13 @@ type stubRepo struct {
 	countCalls  int
 }
 
+type loggerStub struct{}
+
+func (loggerStub) Debug(context.Context, string, ...any) {}
+func (loggerStub) Info(context.Context, string, ...any)  {}
+func (loggerStub) Warn(context.Context, string, ...any)  {}
+func (loggerStub) Error(context.Context, string, ...any) {}
+
 func (s *stubRepo) Create(_ context.Context, _ entity.Task) (entity.Task, error) {
 	s.createCalls++
 
@@ -140,7 +147,7 @@ func newCache(t *testing.T, stub *stubRepo) (*redistask.DB, int64) {
 		sharedConn.Client().Del(context.Background(), fmt.Sprintf("%s%d", redistask.TaskKeyPrefix, id))
 	})
 
-	return redistask.New(stub, sharedConn, cacheTTL), id
+	return redistask.New(stub, sharedConn, cacheTTL, loggerStub{}), id
 }
 
 func newListRequest() param.ListTasksRequest {

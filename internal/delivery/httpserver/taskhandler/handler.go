@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"graph-code-challenge/internal/entity"
+	"graph-code-challenge/internal/logger"
 	"graph-code-challenge/internal/param"
 	"graph-code-challenge/internal/validator/taskvalidator"
 )
@@ -42,10 +43,11 @@ type TaskService interface {
 type Handler struct {
 	taskSvc       TaskService
 	taskValidator taskvalidator.Validator
+	logger        logger.Logger
 }
 
-func New(taskSvc TaskService, taskValidator taskvalidator.Validator) Handler {
-	return Handler{taskSvc: taskSvc, taskValidator: taskValidator}
+func New(taskSvc TaskService, taskValidator taskvalidator.Validator, log logger.Logger) Handler {
+	return Handler{taskSvc: taskSvc, taskValidator: taskValidator, logger: log}
 }
 
 func (h Handler) SetRoutes(rg *gin.RouterGroup) {
@@ -82,14 +84,14 @@ func (h Handler) create(c *gin.Context) {
 	}
 
 	if fields, err := h.taskValidator.ValidateCreateRequest(req); err != nil {
-		writeError(c, err, fields)
+		h.writeError(c, err, fields)
 
 		return
 	}
 
 	resp, err := h.taskSvc.Create(c.Request.Context(), req)
 	if err != nil {
-		writeError(c, err, nil)
+		h.writeError(c, err, nil)
 
 		return
 	}
@@ -115,7 +117,7 @@ func (h Handler) get(c *gin.Context) {
 
 	resp, err := h.taskSvc.GetByID(c.Request.Context(), param.GetTaskRequest{ID: id})
 	if err != nil {
-		writeError(c, err, nil)
+		h.writeError(c, err, nil)
 
 		return
 	}
@@ -144,14 +146,14 @@ func (h Handler) list(c *gin.Context) {
 	}
 
 	if fields, err := h.taskValidator.ValidateListRequest(req); err != nil {
-		writeError(c, err, fields)
+		h.writeError(c, err, fields)
 
 		return
 	}
 
 	resp, err := h.taskSvc.List(c.Request.Context(), req)
 	if err != nil {
-		writeError(c, err, nil)
+		h.writeError(c, err, nil)
 
 		return
 	}
@@ -187,14 +189,14 @@ func (h Handler) update(c *gin.Context) {
 	req.ID = id
 
 	if fields, err := h.taskValidator.ValidateUpdateRequest(req); err != nil {
-		writeError(c, err, fields)
+		h.writeError(c, err, fields)
 
 		return
 	}
 
 	resp, err := h.taskSvc.Update(c.Request.Context(), req)
 	if err != nil {
-		writeError(c, err, nil)
+		h.writeError(c, err, nil)
 
 		return
 	}
@@ -219,7 +221,7 @@ func (h Handler) delete(c *gin.Context) {
 	}
 
 	if _, err := h.taskSvc.Delete(c.Request.Context(), param.DeleteTaskRequest{ID: id}); err != nil {
-		writeError(c, err, nil)
+		h.writeError(c, err, nil)
 
 		return
 	}
@@ -318,13 +320,14 @@ func writeFields(c *gin.Context, fields map[string]string) {
 	c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Message: MsgInvalidInput, Errors: fields})
 }
 
-func writeError(c *gin.Context, err error, fields map[string]string) {
+func (h Handler) writeError(c *gin.Context, err error, fields map[string]string) {
 	switch {
 	case errors.Is(err, entity.ErrNotFound):
 		c.AbortWithStatusJSON(http.StatusNotFound, ErrorResponse{Message: MsgNotFound})
 	case errors.Is(err, entity.ErrValidation):
 		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Message: MsgInvalidInput, Errors: fields})
 	default:
+		h.logger.Error(c.Request.Context(), "task request failed", "error", err)
 		c.AbortWithStatusJSON(http.StatusInternalServerError, ErrorResponse{Message: MsgInternal})
 	}
 }

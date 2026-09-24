@@ -92,8 +92,10 @@ in one pipelined round trip.
 
 Every cache operation is best-effort: a Redis error makes a read fall through to
 Postgres and a write proceed anyway, because a cache must never be able to take
-the API down. Invalidation runs on `context.WithoutCancel`, so a client that
-disconnects the instant after its write still gets its stale entries dropped.
+the API down. Failures are emitted as structured warning logs with their request
+ID and cache operation. Invalidation runs on `context.WithoutCancel`, so a client
+that disconnects the instant after its write still gets its stale entries
+dropped.
 
 ### When this is the wrong design
 
@@ -150,6 +152,28 @@ For combined unit + integration coverage as a single merged figure:
 ```sh
 make coverage
 ```
+
+## Observability
+
+Prometheus metrics are exposed at `GET /metrics`. Request counters and latency
+histograms are accumulated in process memory, while `tasks_count` reads the
+current non-deleted task count from Postgres when the endpoint is scraped.
+
+```sh
+curl http://localhost:8080/metrics
+```
+
+The application writes structured JSON logs through a context-aware logger
+interface backed by `log/slog`. HTTP middleware accepts or creates an
+`X-Request-ID`, returns it to the caller, and propagates it through the request
+context so handler and cache logs carry the same `request_id` field.
+
+```sh
+curl -i -H 'X-Request-ID: demo-42' http://localhost:8080/healthz
+```
+
+This is log correlation rather than full distributed tracing: it does not
+create spans, propagate W3C trace context or export data to a tracing backend.
 
 ## Load testing and profiling
 

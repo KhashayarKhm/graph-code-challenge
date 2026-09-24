@@ -12,6 +12,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"graph-code-challenge/internal/entity"
+	"graph-code-challenge/internal/logger"
 	"graph-code-challenge/internal/param"
 	"graph-code-challenge/internal/repository/redis"
 )
@@ -37,10 +38,11 @@ type DB struct {
 	next Repository
 	conn *redis.DB
 	ttl  time.Duration
+	log  logger.Logger
 }
 
-func New(next Repository, conn *redis.DB, ttl time.Duration) *DB {
-	return &DB{next: next, conn: conn, ttl: ttl}
+func New(next Repository, conn *redis.DB, ttl time.Duration, log logger.Logger) *DB {
+	return &DB{next: next, conn: conn, ttl: ttl, log: log}
 }
 
 func (d *DB) Create(ctx context.Context, task entity.Task) (entity.Task, error) {
@@ -122,6 +124,8 @@ func (d *DB) Count(ctx context.Context) (int64, error) {
 func (d *DB) listKey(ctx context.Context, req param.ListTasksRequest) string {
 	generation, err := d.conn.Client().Get(ctx, ListGenKey).Int64()
 	if err != nil && !errors.Is(err, goredis.Nil) {
+		d.log.Warn(ctx, "cache operation failed", "operation", "get_list_generation", "error", err)
+
 		return ""
 	}
 
@@ -132,23 +136,40 @@ func (d *DB) listKey(ctx context.Context, req param.ListTasksRequest) string {
 func (d *DB) load(ctx context.Context, key string, into any) bool {
 	payload, err := d.conn.Client().Get(ctx, key).Bytes()
 	if err != nil {
+		if !errors.Is(err, goredis.Nil) {
+			d.log.Warn(ctx, "cache operation failed", "operation", "get", "cache_key", key, "error", err)
+		}
+
 		return false
 	}
 
-	return json.Unmarshal(payload, into) == nil
+	if err := json.Unmarshal(payload, into); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "decode", "cache_key", key, "error", err)
+
+		return false
+	}
+
+	return true
 }
 
 func (d *DB) store(ctx context.Context, key string, value any) {
 	payload, err := json.Marshal(value)
 	if err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "encode", "cache_key", key, "error", err)
+
 		return
 	}
 
-	d.conn.Client().Set(context.WithoutCancel(ctx), key, payload, d.ttl)
+	if err := d.conn.Client().Set(context.WithoutCancel(ctx), key, payload, d.ttl).Err(); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "set", "cache_key", key, "error", err)
+	}
 }
 
 func (d *DB) evict(ctx context.Context, id int64) {
-	d.conn.Client().Del(context.WithoutCancel(ctx), taskKey(id))
+	key := taskKey(id)
+	if err := d.conn.Client().Del(context.WithoutCancel(ctx), key).Err(); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "delete", "cache_key", key, "error", err)
+	}
 }
 
 func (d *DB) retireLists(ctx context.Context) {
@@ -157,7 +178,9 @@ func (d *DB) retireLists(ctx context.Context) {
 	pipe := d.conn.Client().TxPipeline()
 	pipe.Incr(ctx, ListGenKey)
 	pipe.Expire(ctx, ListGenKey, d.ttl*generationTTLFactor)
-	pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "retire_lists", "error", err)
+	}
 }
 
 func taskKey(id int64) string {

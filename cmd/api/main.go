@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +13,8 @@ import (
 	"graph-code-challenge/internal/config"
 	"graph-code-challenge/internal/delivery/httpserver"
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
+	"graph-code-challenge/internal/logger"
+	"graph-code-challenge/internal/logger/sloglogger"
 	"graph-code-challenge/internal/metrics"
 	"graph-code-challenge/internal/profiler"
 	"graph-code-challenge/internal/repository/postgres"
@@ -45,13 +48,15 @@ type serverResult struct {
 // @BasePath /
 // @schemes http
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+	log := sloglogger.New(os.Stdout, slog.LevelInfo)
+
+	if err := run(log); err != nil {
+		log.Error(context.Background(), "application stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(log logger.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -72,20 +77,20 @@ func run() error {
 		}
 		defer cache.Close()
 
-		repo = redistask.New(repo, cache, cfg.RedisTTL)
+		repo = redistask.New(repo, cache, cfg.RedisTTL, log)
 
-		fmt.Println("cache-aside enabled, ttl", cfg.RedisTTL)
+		log.Info(context.Background(), "cache-aside enabled", "ttl", cfg.RedisTTL)
 	}
 
 	taskSvc := taskservice.New(repo)
-	handler := taskhandler.New(taskSvc, taskvalidator.New())
+	handler := taskhandler.New(taskSvc, taskvalidator.New(), log)
 
 	appMetrics := metrics.New()
 	if err := appMetrics.RegisterTaskGauge(taskSvc); err != nil {
 		return err
 	}
 
-	server := httpserver.New(cfg, handler, appMetrics)
+	server := httpserver.New(cfg, handler, appMetrics, log)
 	server.Setup()
 
 	servers := []namedServer{{name: "api", server: server}}
@@ -103,9 +108,9 @@ func run() error {
 		}()
 	}
 
-	fmt.Println("api listening on", cfg.Addr())
+	log.Info(context.Background(), "api listening", "address", cfg.Addr())
 	if cfg.PProfEnabled {
-		fmt.Println("pprof listening on", cfg.PProfAddr())
+		log.Info(context.Background(), "pprof listening", "address", cfg.PProfAddr())
 	}
 
 	var runErr error
@@ -121,7 +126,7 @@ func run() error {
 		}
 	case <-ctx.Done():
 		stop()
-		fmt.Println("shutdown signal received, draining connections")
+		log.Info(context.Background(), "shutdown signal received, draining connections")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -144,7 +149,7 @@ func run() error {
 		return runErr
 	}
 
-	fmt.Println("shutdown complete")
+	log.Info(context.Background(), "shutdown complete")
 
 	return nil
 }

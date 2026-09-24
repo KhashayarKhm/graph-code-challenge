@@ -13,6 +13,7 @@ import (
 
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
 	"graph-code-challenge/internal/entity"
+	"graph-code-challenge/internal/logger"
 	"graph-code-challenge/internal/param"
 	"graph-code-challenge/internal/validator/taskvalidator"
 )
@@ -28,6 +29,17 @@ type svcStub struct {
 	listFn   func(context.Context, param.ListTasksRequest) (param.ListTasksResponse, error)
 	updateFn func(context.Context, param.UpdateTaskRequest) (param.UpdateTaskResponse, error)
 	deleteFn func(context.Context, param.DeleteTaskRequest) (param.DeleteTaskResponse, error)
+}
+
+type loggerStub struct {
+	errorCalls int
+}
+
+func (*loggerStub) Debug(context.Context, string, ...any) {}
+func (*loggerStub) Info(context.Context, string, ...any)  {}
+func (*loggerStub) Warn(context.Context, string, ...any)  {}
+func (l *loggerStub) Error(context.Context, string, ...any) {
+	l.errorCalls++
 }
 
 func (s svcStub) Create(ctx context.Context, req param.CreateTaskRequest) (param.CreateTaskResponse, error) {
@@ -71,8 +83,12 @@ func (s svcStub) Delete(ctx context.Context, req param.DeleteTaskRequest) (param
 }
 
 func serve(svc taskhandler.TaskService, method, target, body string) *httptest.ResponseRecorder {
+	return serveWithLogger(svc, &loggerStub{}, method, target, body)
+}
+
+func serveWithLogger(svc taskhandler.TaskService, log logger.Logger, method, target, body string) *httptest.ResponseRecorder {
 	router := gin.New()
-	taskhandler.New(svc, taskvalidator.New()).SetRoutes(router.Group("/api/v1"))
+	taskhandler.New(svc, taskvalidator.New(), log).SetRoutes(router.Group("/api/v1"))
 
 	var reader *strings.Reader
 	if body == "" {
@@ -192,11 +208,12 @@ func TestCreateValidationReturns400WithFieldErrors(t *testing.T) {
 }
 
 func TestCreateServiceFailureReturns500WithoutLeakingDetail(t *testing.T) {
+	log := &loggerStub{}
 	svc := svcStub{createFn: func(context.Context, param.CreateTaskRequest) (param.CreateTaskResponse, error) {
 		return param.CreateTaskResponse{}, errors.New("pq: connection refused on 10.0.0.5")
 	}}
 
-	rec := serve(svc, http.MethodPost, "/api/v1/tasks", `{"title":"x"}`)
+	rec := serveWithLogger(svc, log, http.MethodPost, "/api/v1/tasks", `{"title":"x"}`)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
@@ -204,6 +221,10 @@ func TestCreateServiceFailureReturns500WithoutLeakingDetail(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), "10.0.0.5") {
 		t.Errorf("body leaks internal detail: %s", rec.Body.String())
+	}
+
+	if log.errorCalls != 1 {
+		t.Errorf("error log calls = %d, want 1", log.errorCalls)
 	}
 }
 
@@ -456,7 +477,7 @@ func TestCreateBindsJSONWithoutAContentTypeHeader(t *testing.T) {
 	}}
 
 	router := gin.New()
-	taskhandler.New(svc, taskvalidator.New()).SetRoutes(router.Group("/api/v1"))
+	taskhandler.New(svc, taskvalidator.New(), &loggerStub{}).SetRoutes(router.Group("/api/v1"))
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(`{"title":"no header"}`)))
@@ -472,7 +493,7 @@ func TestCreateBindsJSONWithoutAContentTypeHeader(t *testing.T) {
 
 func TestErrorResponsesAreServedAsJSON(t *testing.T) {
 	router := gin.New()
-	taskhandler.New(svcStub{}, taskvalidator.New()).SetRoutes(router.Group("/api/v1"))
+	taskhandler.New(svcStub{}, taskvalidator.New(), &loggerStub{}).SetRoutes(router.Group("/api/v1"))
 
 	srv := httptest.NewServer(router)
 	defer srv.Close()
