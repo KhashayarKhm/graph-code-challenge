@@ -28,16 +28,19 @@ func (am AppMode) IsValid() bool {
 }
 
 const (
-	DefaultEnvFile  = ".env"
-	DefaultRedisTTL = time.Minute
+	DefaultEnvFile   = ".env"
+	DefaultRedisTTL  = time.Minute
+	DefaultPProfPort = 6060
 )
 
 type Config struct {
-	AppMode     AppMode
-	HTTPPort    int
-	DatabaseURL string
-	RedisURL    string
-	RedisTTL    time.Duration
+	AppMode      AppMode
+	HTTPPort     int
+	DatabaseURL  string
+	RedisURL     string
+	RedisTTL     time.Duration
+	PProfEnabled bool
+	PProfPort    int
 }
 
 func Load() (Config, error) {
@@ -65,12 +68,24 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	pprofEnabled, err := envBool("PPROF_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+
+	pprofPort, err := envInt("PPROF_PORT", DefaultPProfPort)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
-		AppMode:     mode,
-		HTTPPort:    port,
-		DatabaseURL: envStr("DATABASE_URL", ""),
-		RedisURL:    envStr("REDIS_URL", ""),
-		RedisTTL:    redisTTL,
+		AppMode:      mode,
+		HTTPPort:     port,
+		DatabaseURL:  envStr("DATABASE_URL", ""),
+		RedisURL:     envStr("REDIS_URL", ""),
+		RedisTTL:     redisTTL,
+		PProfEnabled: pprofEnabled,
+		PProfPort:    pprofPort,
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -84,6 +99,10 @@ func (c Config) Addr() string {
 	return fmt.Sprintf(":%d", c.HTTPPort)
 }
 
+func (c Config) PProfAddr() string {
+	return fmt.Sprintf(":%d", c.PProfPort)
+}
+
 func (c Config) validate() error {
 	if c.DatabaseURL == "" {
 		return errors.New("config: DATABASE_URL is required (set it in .env or the environment)")
@@ -95,6 +114,14 @@ func (c Config) validate() error {
 
 	if c.RedisURL != "" && c.RedisTTL <= 0 {
 		return fmt.Errorf("config: REDIS_TTL must be positive, got %s", c.RedisTTL)
+	}
+
+	if c.PProfEnabled && (c.PProfPort < 1 || c.PProfPort > 65535) {
+		return fmt.Errorf("config: PPROF_PORT must be between 1 and 65535, got %d", c.PProfPort)
+	}
+
+	if c.PProfEnabled && c.PProfPort == c.HTTPPort {
+		return errors.New("config: PPROF_PORT must differ from HTTP_PORT")
 	}
 
 	return nil
@@ -131,6 +158,20 @@ func envInt(key string, def int) (int, error) {
 	value, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("config: %s must be an integer, got %q", key, raw)
+	}
+
+	return value, nil
+}
+
+func envBool(key string, def bool) (bool, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("config: %s must be a boolean, got %q", key, raw)
 	}
 
 	return value, nil

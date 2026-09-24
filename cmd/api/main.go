@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"graph-code-challenge/internal/delivery/httpserver"
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
 	"graph-code-challenge/internal/metrics"
+	"graph-code-challenge/internal/profiler"
 	"graph-code-challenge/internal/repository/postgres"
 	"graph-code-challenge/internal/repository/postgres/postgrestask"
 	"graph-code-challenge/internal/repository/redis"
@@ -21,6 +23,21 @@ import (
 )
 
 const shutdownTimeout = 10 * time.Second
+
+type managedServer interface {
+	Serve() error
+	Shutdown(context.Context) error
+}
+
+type namedServer struct {
+	name   string
+	server managedServer
+}
+
+type serverResult struct {
+	name string
+	err  error
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -66,19 +83,37 @@ func run() error {
 	server := httpserver.New(cfg, handler, appMetrics)
 	server.Setup()
 
+	servers := []namedServer{{name: "api", server: server}}
+	if cfg.PProfEnabled {
+		servers = append(servers, namedServer{name: "pprof", server: profiler.New(cfg.PProfAddr())})
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	serveErr := make(chan error, 1)
+	serveResult := make(chan serverResult, len(servers))
+	for _, current := range servers {
+		go func() {
+			serveResult <- serverResult{name: current.name, err: current.server.Serve()}
+		}()
+	}
 
-	go func() {
-		fmt.Println("listening on", cfg.Addr())
-		serveErr <- server.Serve()
-	}()
+	fmt.Println("api listening on", cfg.Addr())
+	if cfg.PProfEnabled {
+		fmt.Println("pprof listening on", cfg.PProfAddr())
+	}
+
+	var runErr error
+	completedServers := 0
 
 	select {
-	case err := <-serveErr:
-		return err
+	case result := <-serveResult:
+		completedServers = 1
+		if result.err != nil {
+			runErr = fmt.Errorf("%s: %w", result.name, result.err)
+		} else {
+			runErr = fmt.Errorf("%s server stopped unexpectedly", result.name)
+		}
 	case <-ctx.Done():
 		stop()
 		fmt.Println("shutdown signal received, draining connections")
@@ -87,12 +122,21 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		return err
+	for _, current := range servers {
+		if err := current.server.Shutdown(shutdownCtx); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
 	}
 
-	if err := <-serveErr; err != nil {
-		return err
+	for range len(servers) - completedServers {
+		result := <-serveResult
+		if result.err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", result.name, result.err))
+		}
+	}
+
+	if runErr != nil {
+		return runErr
 	}
 
 	fmt.Println("shutdown complete")

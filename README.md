@@ -131,6 +131,75 @@ For combined unit + integration coverage as a single merged figure:
 make coverage
 ```
 
+## Load testing and profiling
+
+The k6 scenario in `loadtest/k6/tasks_load_test.js` ramps from 0 to 30 virtual
+users and back down over one minute. It exercises list and filtered-list reads,
+single-task reads, creates, partial updates and deletes. Tasks are tagged with a
+run-specific assignee and removed during teardown. The run fails if request or
+application-check errors reach 1%, or if overall p95 latency reaches 500 ms.
+
+Run it against an already-migrated stack:
+
+```sh
+make load-test
+# Or target another deployment:
+make load-test BASE_URL=https://tasks.example.com
+```
+
+Profiling is disabled by default. Enable it only for a profiling run:
+
+```sh
+PPROF_ENABLED=true docker compose up --build -d api
+```
+
+pprof has its own server and mux on port 6060; it is not mounted on the public
+Gin router. Compose binds that port to `127.0.0.1`, so it cannot be reached on an
+external interface. Capture a profile in one terminal while k6 runs in another:
+
+```sh
+make pprof-cpu
+make pprof-heap
+go tool pprof -top .tmp/profiles/cpu.pb.gz
+go tool pprof -http=:0 .tmp/profiles/heap.pb.gz
+```
+
+`PPROF_PORT` changes the internal listener port when running the binary directly.
+If it changes under Compose, update the loopback port mapping to match. Do not
+publish this listener in a production deployment; pprof data can reveal process
+and workload details.
+
+### Baseline result
+
+The one-minute scenario was run locally on 24 September 2026 with the API on the
+host and Postgres and Redis in Compose. These numbers are a development-machine
+baseline, not a production capacity claim:
+
+| Measurement | Result |
+| --- | ---: |
+| HTTP requests | 10,820 |
+| Throughput | 174.48 requests/s |
+| p95 latency | 4.23 ms |
+| Median latency | 0.64 ms |
+| HTTP/check failure rate | 0% |
+
+The simultaneous 60-second CPU profile contained 2.59 CPU-seconds of samples,
+or 4.32% of one core. Linux syscalls were the largest flat entry at 26.25% and
+runtime futex waits were next at 9.27%. The list handler accounted for 27.03%
+cumulatively, with the Postgres list adapter at 14.67%; cumulative values overlap
+their callees and are not additive. JSON response writing was 10.42% cumulative.
+No application function was a significant flat CPU hotspot, so the useful
+conclusion at this load is that the service is lightly CPU-utilized and spends
+most sampled time in network/database I/O and runtime scheduling. Optimizing
+handler code from this profile would be premature; a higher-throughput or
+database-constrained run is the next useful experiment.
+
+The post-run heap profile reported about 5.23 MiB in use. Profiling/runtime
+buffers accounted for about 2.72 MiB, and the largest application-linked entry
+was pgx's prepared-statement cache at about 512 KiB. It showed no evidence of
+unbounded task retention in this bounded run. A longer soak test with several
+heap snapshots would be required before making a memory-leak claim.
+
 ## Migrations
 
 Migrations are applied deliberately, never on API startup:

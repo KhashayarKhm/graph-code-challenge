@@ -45,8 +45,11 @@ services:
       DATABASE_URL: *database-url
       REDIS_URL: redis://redis:6379/0
       REDIS_TTL: 60s
+      PPROF_ENABLED: ${PPROF_ENABLED:-false}
+      PPROF_PORT: 6060
     ports:
       - "8080:8080"
+      - "127.0.0.1:6060:6060"
     depends_on:
       postgres:
         condition: service_healthy

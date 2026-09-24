@@ -2,7 +2,7 @@ TEST_ENV_FILE ?= $(CURDIR)/.env.test
 COVERAGE_FILE ?= coverage.out
 COVER_PKGS := ./internal/...
 
-.PHONY: help build run vet test test-unit test-integration coverage coverage-html
+.PHONY: help build run vet test test-unit test-integration coverage coverage-html load-test pprof-cpu pprof-heap
 
 help:
 	@echo "build             compile every package"
@@ -13,6 +13,9 @@ help:
 	@echo "test              test-unit then test-integration"
 	@echo "coverage          merged unit + integration profile, prints the total"
 	@echo "coverage-html     open the line-by-line coverage report"
+	@echo "load-test         run the k6 task workload against BASE_URL"
+	@echo "pprof-cpu         capture a 30-second CPU profile"
+	@echo "pprof-heap        capture a heap profile"
 
 build:
 	go build ./...
@@ -42,3 +45,14 @@ coverage:
 
 coverage-html: coverage
 	go tool cover -html=$(COVERAGE_FILE)
+
+load-test:
+	k6 run -e BASE_URL=$(or $(BASE_URL),http://localhost:8080) loadtest/k6/tasks_load_test.js
+
+pprof-cpu:
+	mkdir -p .tmp/profiles
+	go tool pprof -proto -seconds=30 -output=.tmp/profiles/cpu.pb.gz http://localhost:6060/debug/pprof/profile
+
+pprof-heap:
+	mkdir -p .tmp/profiles
+	go tool pprof -proto -output=.tmp/profiles/heap.pb.gz http://localhost:6060/debug/pprof/heap
