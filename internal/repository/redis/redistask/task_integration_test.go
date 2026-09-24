@@ -83,12 +83,12 @@ func requireTestRedisDB(rawURL string) error {
 }
 
 type stubRepo struct {
-	task          entity.Task
-	tasks         []entity.Task
-	err           error
-	createStarted chan struct{}
-	countStarted  chan struct{}
-	countRelease  chan struct{}
+	task           entity.Task
+	tasks          []entity.Task
+	err            error
+	createStarted  chan struct{}
+	createRelease  chan struct{}
+	createAddsTask bool
 
 	createCalls int
 	getCalls    int
@@ -107,8 +107,14 @@ func (loggerStub) Error(context.Context, string, ...any) {}
 
 func (s *stubRepo) Create(_ context.Context, _ entity.Task) (entity.Task, error) {
 	s.createCalls++
+	if s.createAddsTask && s.err == nil {
+		s.tasks = append(s.tasks, s.task)
+	}
 	if s.createStarted != nil {
 		close(s.createStarted)
+	}
+	if s.createRelease != nil {
+		<-s.createRelease
 	}
 
 	return s.task, s.err
@@ -140,10 +146,6 @@ func (s *stubRepo) Delete(_ context.Context, _ int64) error {
 
 func (s *stubRepo) Count(_ context.Context) (int64, error) {
 	s.countCalls++
-	if s.countStarted != nil {
-		close(s.countStarted)
-		<-s.countRelease
-	}
 
 	return int64(len(s.tasks)), s.err
 }
@@ -452,7 +454,7 @@ func TestCountServesTheSecondReadFromTheCache(t *testing.T) {
 	}
 }
 
-func TestCreateAndDeleteAdjustCachedCount(t *testing.T) {
+func TestCreateAndDeleteInvalidateCachedCount(t *testing.T) {
 	stub := &stubRepo{tasks: []entity.Task{{ID: 1}}}
 	repo, _ := newCache(t, stub)
 
@@ -463,38 +465,35 @@ func TestCreateAndDeleteAdjustCachedCount(t *testing.T) {
 	if _, err := repo.Create(context.Background(), entity.Task{Title: "new"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if count, err := repo.Count(context.Background()); err != nil || count != 2 {
-		t.Fatalf("count after create = %d, %v; want 2, nil", count, err)
+	if exists := sharedConn.Client().Exists(context.Background(), redistask.CountKey).Val(); exists != 0 {
+		t.Errorf("count key exists after create; want invalidated")
+	}
+
+	if _, err := repo.Count(context.Background()); err != nil {
+		t.Fatalf("repopulate count: %v", err)
 	}
 
 	if err := repo.Delete(context.Background(), 1); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if count, err := repo.Count(context.Background()); err != nil || count != 1 {
-		t.Fatalf("count after delete = %d, %v; want 1, nil", count, err)
+	if exists := sharedConn.Client().Exists(context.Background(), redistask.CountKey).Val(); exists != 0 {
+		t.Errorf("count key exists after delete; want invalidated")
 	}
 
-	if stub.countCalls != 1 {
-		t.Errorf("repository counts = %d, want 1", stub.countCalls)
+	if stub.countCalls != 2 {
+		t.Errorf("repository counts = %d, want 2", stub.countCalls)
 	}
 }
 
-func TestCountInitializationDoesNotOverwriteConcurrentCreate(t *testing.T) {
+func TestCommittedCreateInvalidatesConcurrentlyPopulatedCount(t *testing.T) {
 	stub := &stubRepo{
-		tasks:         []entity.Task{{ID: 1}},
-		createStarted: make(chan struct{}),
-		countStarted:  make(chan struct{}),
-		countRelease:  make(chan struct{}),
+		task:           entity.Task{ID: 2},
+		tasks:          []entity.Task{{ID: 1}},
+		createStarted:  make(chan struct{}),
+		createRelease:  make(chan struct{}),
+		createAddsTask: true,
 	}
 	repo, _ := newCache(t, stub)
-
-	countDone := make(chan error, 1)
-	go func() {
-		_, err := repo.Count(context.Background())
-		countDone <- err
-	}()
-
-	<-stub.countStarted
 
 	createDone := make(chan error, 1)
 	go func() {
@@ -503,16 +502,25 @@ func TestCountInitializationDoesNotOverwriteConcurrentCreate(t *testing.T) {
 	}()
 
 	<-stub.createStarted
-	close(stub.countRelease)
 
-	if err := <-countDone; err != nil {
-		t.Fatalf("initial count: %v", err)
+	count, err := repo.Count(context.Background())
+	if err != nil {
+		t.Fatalf("concurrent count: %v", err)
 	}
+	if count != 2 {
+		t.Fatalf("concurrent count = %d, want 2", count)
+	}
+
+	close(stub.createRelease)
 	if err := <-createDone; err != nil {
 		t.Fatalf("concurrent create: %v", err)
 	}
 
-	count, err := repo.Count(context.Background())
+	if exists := sharedConn.Client().Exists(context.Background(), redistask.CountKey).Val(); exists != 0 {
+		t.Errorf("count key exists after create completes; want invalidated")
+	}
+
+	count, err = repo.Count(context.Background())
 	if err != nil {
 		t.Fatalf("final count: %v", err)
 	}

@@ -329,11 +329,11 @@ dropped.
 The non-deleted task count is cached separately as `tasks:count`. On a miss, the
 Redis decorator acquires a short-lived `SET NX` lock, checks the key again, reads
 PostgreSQL once and stores the result with a TTL. Successful creates and deletes
-take the same lock and atomically increment or decrement an existing count. If
-the key has expired, writes leave it absent so the next count read rebuilds it
-from PostgreSQL instead of guessing a baseline. A token-checked Lua release
-prevents one lock owner from releasing another owner's expired-and-reacquired
-lock.
+take the same lock and invalidate the cached count. The next background refresh
+then rebuilds it from PostgreSQL instead of trying to adjust a value whose
+initialization may have overlapped the committed write. A token-checked Lua
+release prevents one lock owner from releasing another owner's
+expired-and-reacquired lock.
 
 ### When this is the wrong design
 

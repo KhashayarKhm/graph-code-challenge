@@ -25,29 +25,17 @@ const (
 	CountKey      = "tasks:count"
 	CountLockKey  = "tasks:count:lock"
 
-	generationTTLFactor  = 10
-	countLockTTL         = 3 * time.Second
-	countLockRetry       = 10 * time.Millisecond
-	countAdjustmentLimit = countLockTTL + time.Second
+	generationTTLFactor    = 10
+	countLockTTL           = 3 * time.Second
+	countLockRetry         = 10 * time.Millisecond
+	countInvalidationLimit = countLockTTL + time.Second
 )
 
-var (
-	releaseCountLockScript = goredis.NewScript(`
+var releaseCountLockScript = goredis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
     return redis.call("DEL", KEYS[1])
 end
 return 0`)
-	adjustCountScript = goredis.NewScript(`
-if redis.call("EXISTS", KEYS[1]) == 0 then
-    return false
-end
-local value = redis.call("INCRBY", KEYS[1], ARGV[1])
-if value < 0 then
-    redis.call("DEL", KEYS[1])
-    return false
-end
-return value`)
-)
 
 type Repository interface {
 	Create(ctx context.Context, task entity.Task) (entity.Task, error)
@@ -76,7 +64,7 @@ func (d *DB) Create(ctx context.Context, task entity.Task) (entity.Task, error) 
 	}
 
 	d.retireLists(ctx)
-	d.adjustCount(ctx, 1)
+	d.invalidateCount(ctx)
 
 	return created, nil
 }
@@ -138,7 +126,7 @@ func (d *DB) Delete(ctx context.Context, id int64) error {
 
 	d.evict(ctx, id)
 	d.retireLists(ctx)
-	d.adjustCount(ctx, -1)
+	d.invalidateCount(ctx)
 
 	return nil
 }
@@ -184,8 +172,8 @@ func (d *DB) Count(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-func (d *DB) adjustCount(ctx context.Context, delta int64) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), countAdjustmentLimit)
+func (d *DB) invalidateCount(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), countInvalidationLimit)
 	defer cancel()
 
 	token, err := d.acquireCountLock(ctx)
@@ -196,8 +184,8 @@ func (d *DB) adjustCount(ctx context.Context, delta int64) {
 	}
 	defer d.releaseCountLock(ctx, token)
 
-	if _, err := adjustCountScript.Run(ctx, d.conn.Client(), []string{CountKey}, delta).Result(); err != nil {
-		d.log.Warn(ctx, "cache operation failed", "operation", "adjust_count", "error", err)
+	if err := d.conn.Client().Del(ctx, CountKey).Err(); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "invalidate_count", "error", err)
 	}
 }
 
