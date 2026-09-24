@@ -1,0 +1,14 @@
+.git
+.gitignore
+.tmp
+.env
+.env.test
+.env.example
+coverage.out
+Dockerfile
+docker-compose.yml
+Makefile
+PLAN.md
+README.md
+loadtest
+**/*_test.go

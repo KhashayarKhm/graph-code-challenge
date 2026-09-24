@@ -4,6 +4,31 @@ Task Manager microservice — Golang developer hiring evaluation for GRAPH.
 
 Work in progress. Architecture, API reference and design trade-offs are still to be written.
 
+## Running with Docker
+
+```sh
+docker compose up --build -d
+docker compose run --rm --entrypoint /migrate api up
+curl http://localhost:8080/healthz
+```
+
+That brings up `postgres`, `redis` and `api` on port 8080; the API waits for both
+data stores to report healthy before it starts. Migrations stay a deliberate,
+separate step — never run on API startup — so apply them once with the second
+command, which reuses the same image and the same `DATABASE_URL` as the API but
+on the compose network. `go run ./cmd/migrate up` from the host does the same job
+against `localhost:5432`.
+
+The image is multi-stage: `golang:1.26-alpine` builds static binaries, and the
+final stage is `gcr.io/distroless/static-debian12:nonroot` — no shell, no package
+manager, running as an unprivileged user. Because there is no shell, the API's
+compose healthcheck cannot be a `wget`/`curl` one-liner; a third tiny binary,
+`/healthcheck`, ships in the image and exits non-zero unless `/healthz` answers
+200.
+
+Rebuild after a code change with `docker compose up --build -d api`, and tear the
+stack down with `docker compose down` (add `-v` to drop the database volume too).
+
 ## Running the tests
 
 Unit tests need nothing but Go:
