@@ -2,8 +2,11 @@ package taskhandler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -20,7 +23,13 @@ const (
 	MsgNotFound     = "task not found"
 	MsgInvalidInput = "invalid input"
 	MsgInternal     = "internal server error"
+
+	MsgWrongType   = "%s must be %s, got %s"
+	MsgNotNumber   = "%s must be a whole number"
+	MsgNumberRange = "%s is out of range"
 )
+
+var numericQueryParams = []string{"cursor", "limit"}
 
 type TaskService interface {
 	Create(ctx context.Context, req param.CreateTaskRequest) (param.CreateTaskResponse, error)
@@ -57,9 +66,7 @@ type ErrorResponse struct {
 func (h Handler) create(c *gin.Context) {
 	var req param.CreateTaskRequest
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		writeMessage(c, http.StatusBadRequest, MsgInvalidBody)
-
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -98,9 +105,7 @@ func (h Handler) get(c *gin.Context) {
 func (h Handler) list(c *gin.Context) {
 	var req param.ListTasksRequest
 
-	if err := c.ShouldBindQuery(&req); err != nil {
-		writeMessage(c, http.StatusBadRequest, MsgInvalidQuery)
-
+	if !bindQuery(c, &req) {
 		return
 	}
 
@@ -128,9 +133,7 @@ func (h Handler) update(c *gin.Context) {
 
 	var req param.UpdateTaskRequest
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		writeMessage(c, http.StatusBadRequest, MsgInvalidBody)
-
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -167,6 +170,78 @@ func (h Handler) delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func bindJSON(c *gin.Context, req any) bool {
+	err := c.ShouldBindJSON(req)
+	if err == nil {
+		return true
+	}
+
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) && typeErr.Field != "" {
+		writeFields(c, map[string]string{
+			typeErr.Field: fmt.Sprintf(MsgWrongType, typeErr.Field, jsonTypeName(typeErr.Type), typeErr.Value),
+		})
+
+		return false
+	}
+
+	writeMessage(c, http.StatusBadRequest, MsgInvalidBody)
+
+	return false
+}
+
+func bindQuery(c *gin.Context, req any) bool {
+	fields := make(map[string]string)
+
+	for _, name := range numericQueryParams {
+		raw := c.Query(name)
+		if raw == "" {
+			continue
+		}
+
+		if _, err := strconv.ParseInt(raw, 10, 64); err != nil {
+			fields[name] = numericMessage(name, err)
+		}
+	}
+
+	if len(fields) > 0 {
+		writeFields(c, fields)
+
+		return false
+	}
+
+	if err := c.ShouldBindQuery(req); err != nil {
+		writeMessage(c, http.StatusBadRequest, MsgInvalidQuery)
+
+		return false
+	}
+
+	return true
+}
+
+func numericMessage(name string, err error) string {
+	if errors.Is(err, strconv.ErrRange) {
+		return fmt.Sprintf(MsgNumberRange, name)
+	}
+
+	return fmt.Sprintf(MsgNotNumber, name)
+}
+
+func jsonTypeName(fieldType reflect.Type) string {
+	switch fieldType.Kind() {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "a boolean"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.Map, reflect.Struct:
+		return "an object"
+	default:
+		return "a number"
+	}
+}
+
 func parseID(c *gin.Context) (int64, bool) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id < 1 {
@@ -180,6 +255,10 @@ func parseID(c *gin.Context) (int64, bool) {
 
 func writeMessage(c *gin.Context, status int, message string) {
 	c.AbortWithStatusJSON(status, ErrorResponse{Message: message})
+}
+
+func writeFields(c *gin.Context, fields map[string]string) {
+	c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Message: MsgInvalidInput, Errors: fields})
 }
 
 func writeError(c *gin.Context, err error, fields map[string]string) {

@@ -132,6 +132,50 @@ func TestCreateRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestCreateMalformedJSONCarriesNoFieldErrors(t *testing.T) {
+	rec := serve(svcStub{}, http.MethodPost, "/api/v1/tasks", `{"title":`)
+
+	var resp taskhandler.ErrorResponse
+	decode(t, rec, &resp)
+
+	if resp.Errors != nil {
+		t.Errorf("errors = %v, want none: truncated JSON has no field to blame", resp.Errors)
+	}
+}
+
+func TestWrongFieldTypeNamesTheOffendingField(t *testing.T) {
+	testCases := []struct {
+		name, method, target, body, field, want string
+	}{
+		{"create title as number", http.MethodPost, "/api/v1/tasks", `{"title":123}`, "title", "title must be a string, got number"},
+		{"create status as number", http.MethodPost, "/api/v1/tasks", `{"status":5}`, "status", "status must be a string, got number"},
+		{"create title as array", http.MethodPost, "/api/v1/tasks", `{"title":["a"]}`, "title", "title must be a string, got array"},
+		{"update status as bool", http.MethodPatch, "/api/v1/tasks/1", `{"status":true}`, "status", "status must be a string, got bool"},
+		{"update title as number", http.MethodPatch, "/api/v1/tasks/1", `{"title":9}`, "title", "title must be a string, got number"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := serve(svcStub{}, testCase.method, testCase.target, testCase.body)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+
+			var resp taskhandler.ErrorResponse
+			decode(t, rec, &resp)
+
+			if resp.Message != taskhandler.MsgInvalidInput {
+				t.Errorf("message = %q, want %q", resp.Message, taskhandler.MsgInvalidInput)
+			}
+
+			if got := resp.Errors[testCase.field]; got != testCase.want {
+				t.Errorf("errors[%q] = %q, want %q", testCase.field, got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestCreateValidationReturns400WithFieldErrors(t *testing.T) {
 	rec := serve(svcStub{}, http.MethodPost, "/api/v1/tasks", `{"title":"","status":"archived"}`)
 
@@ -237,6 +281,45 @@ func TestListRejectsUnknownStatus(t *testing.T) {
 
 	if resp.Errors["status"] == "" {
 		t.Errorf("errors = %v, want an entry for status", resp.Errors)
+	}
+}
+
+func TestListRejectsUnparsableNumericParams(t *testing.T) {
+	testCases := []struct {
+		name, query string
+		want        map[string]string
+	}{
+		{"cursor is not a number", "cursor=abc", map[string]string{"cursor": "cursor must be a whole number"}},
+		{"limit is not a number", "limit=xyz", map[string]string{"limit": "limit must be a whole number"}},
+		{"limit is fractional", "limit=1.5", map[string]string{"limit": "limit must be a whole number"}},
+		{"limit overflows int64", "limit=99999999999999999999", map[string]string{"limit": "limit is out of range"}},
+		{"both are broken", "cursor=abc&limit=xyz", map[string]string{
+			"cursor": "cursor must be a whole number",
+			"limit":  "limit must be a whole number",
+		}},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := serve(svcStub{}, http.MethodGet, "/api/v1/tasks?"+testCase.query, "")
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+
+			var resp taskhandler.ErrorResponse
+			decode(t, rec, &resp)
+
+			if len(resp.Errors) != len(testCase.want) {
+				t.Fatalf("errors = %v, want %v", resp.Errors, testCase.want)
+			}
+
+			for field, want := range testCase.want {
+				if got := resp.Errors[field]; got != want {
+					t.Errorf("errors[%q] = %q, want %q", field, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -360,5 +443,68 @@ func TestDeleteNotFoundReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestCreateBindsJSONWithoutAContentTypeHeader(t *testing.T) {
+	var got param.CreateTaskRequest
+
+	svc := svcStub{createFn: func(_ context.Context, req param.CreateTaskRequest) (param.CreateTaskResponse, error) {
+		got = req
+
+		return param.CreateTaskResponse{Task: param.TaskInfo{ID: 1}}, nil
+	}}
+
+	router := gin.New()
+	taskhandler.New(svc, taskvalidator.New()).SetRoutes(router.Group("/api/v1"))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/tasks", strings.NewReader(`{"title":"no header"}`)))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+
+	if got.Title != "no header" {
+		t.Errorf("title = %q, want %q: a content-type-negotiating binder falls back to form parsing", got.Title, "no header")
+	}
+}
+
+func TestErrorResponsesAreServedAsJSON(t *testing.T) {
+	router := gin.New()
+	taskhandler.New(svcStub{}, taskvalidator.New()).SetRoutes(router.Group("/api/v1"))
+
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	testCases := []struct{ name, body string }{
+		{"malformed json", `{"title":`},
+		{"wrong field type", `{"title":123}`},
+		{"validation failure", `{"title":""}`},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/tasks", strings.NewReader(testCase.body))
+			if err != nil {
+				t.Fatalf("building the request: %v", err)
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("sending the request: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+
+			if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json: a binder that flushes the header itself leaves the body to be sniffed as text/plain", got)
+			}
+		})
 	}
 }
