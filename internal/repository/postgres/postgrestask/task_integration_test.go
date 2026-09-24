@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,59 +24,87 @@ import (
 
 var _ taskservice.Repository = (*postgrestask.DB)(nil)
 
-func requireTestDatabase(t *testing.T, dsn string) {
-	t.Helper()
+var (
+	sharedDB *postgres.DB
+	runID    = time.Now().UnixNano()
+	seq      atomic.Int64
+)
 
+func TestMain(m *testing.M) {
+	code, err := runTests(m)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "integration setup:", err)
+		os.Exit(1)
+	}
+
+	os.Exit(code)
+}
+
+func runTests(m *testing.M) (int, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return 0, err
+	}
+
+	if err := requireTestDatabase(cfg.DatabaseURL); err != nil {
+		return 0, err
+	}
+
+	if err := migrateUp(cfg.DatabaseURL); err != nil {
+		return 0, err
+	}
+
+	db, err := postgres.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	sharedDB = db
+
+	return m.Run(), nil
+}
+
+func migrateUp(dsn string) error {
+	m, err := migrator.New(dsn)
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+
+	if err := m.Up(); err != nil && !errors.Is(err, migrator.ErrNoChange) {
+		return err
+	}
+
+	return nil
+}
+
+func requireTestDatabase(dsn string) error {
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatalf("DATABASE_URL is not a valid URL: %v", err)
+		return fmt.Errorf("DATABASE_URL is not a valid URL: %w", err)
 	}
 
 	name := strings.TrimPrefix(parsed.Path, "/")
 	if !strings.HasSuffix(name, "_test") {
-		t.Fatalf("refusing to run integration tests against database %q: these tests migrate and delete rows, so the name must end in _test (use ENV_FILE=.env.test, or make test-integration)", name)
+		return fmt.Errorf("refusing to run integration tests against database %q: these tests migrate and delete rows, so the name must end in _test (use ENV_FILE=.env.test, or make test-integration)", name)
 	}
+
+	return nil
 }
 
 func newRepo(t *testing.T) (*postgrestask.DB, string) {
 	t.Helper()
 
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config.Load() = %v", err)
-	}
-
-	requireTestDatabase(t, cfg.DatabaseURL)
-
-	m, err := migrator.New(cfg.DatabaseURL)
-	if err != nil {
-		t.Fatalf("migrator.New() = %v", err)
-	}
-
-	if err := m.Up(); err != nil && !errors.Is(err, migrator.ErrNoChange) {
-		t.Fatalf("migrator.Up() = %v", err)
-	}
-
-	m.Close()
-
-	ctx := context.Background()
-
-	db, err := postgres.New(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Fatalf("postgres.New() = %v", err)
-	}
-
-	assignee := fmt.Sprintf("it-%d", time.Now().UnixNano())
+	assignee := fmt.Sprintf("it-%d-%d", runID, seq.Add(1))
 
 	t.Cleanup(func() {
-		if _, err := db.Pool().Exec(ctx, `DELETE FROM tasks WHERE assignee = $1`, assignee); err != nil {
+		if _, err := sharedDB.Pool().Exec(context.Background(), `DELETE FROM tasks WHERE assignee = $1`, assignee); err != nil {
 			t.Errorf("cleanup failed for assignee %s: %v", assignee, err)
 		}
-
-		db.Close()
 	})
 
-	return postgrestask.New(db), assignee
+	return postgrestask.New(sharedDB), assignee
 }
 
 func seed(t *testing.T, repo *postgrestask.DB, assignee, title string, status entity.TaskStatus) entity.Task {
