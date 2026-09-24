@@ -11,6 +11,7 @@ import (
 	"graph-code-challenge/internal/config"
 	"graph-code-challenge/internal/delivery/httpserver"
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
+	"graph-code-challenge/internal/metrics"
 	"graph-code-challenge/internal/repository/postgres"
 	"graph-code-challenge/internal/repository/postgres/postgrestask"
 	"graph-code-challenge/internal/repository/redis"
@@ -57,7 +58,12 @@ func run() error {
 	taskSvc := taskservice.New(repo)
 	handler := taskhandler.New(taskSvc, taskvalidator.New())
 
-	server := httpserver.New(cfg, handler)
+	appMetrics := metrics.New()
+	if err := appMetrics.RegisterTaskGauge(taskSvc); err != nil {
+		return err
+	}
+
+	server := httpserver.New(cfg, handler, appMetrics)
 	server.Setup()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

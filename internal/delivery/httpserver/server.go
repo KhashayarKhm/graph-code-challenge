@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"graph-code-challenge/internal/config"
+	"graph-code-challenge/internal/delivery/httpserver/middleware"
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
 )
 
@@ -20,15 +21,21 @@ const (
 	idleTimeout       = 60 * time.Second
 )
 
+type Metrics interface {
+	middleware.Recorder
+	Handler() http.Handler
+}
+
 type Server struct {
 	config      config.Config
 	taskHandler taskhandler.Handler
+	metrics     Metrics
 	router      *gin.Engine
 	httpServer  *http.Server
 }
 
-func New(cfg config.Config, taskHandler taskhandler.Handler) *Server {
-	return &Server{config: cfg, taskHandler: taskHandler}
+func New(cfg config.Config, taskHandler taskhandler.Handler, metrics Metrics) *Server {
+	return &Server{config: cfg, taskHandler: taskHandler, metrics: metrics}
 }
 
 func (s *Server) Setup() {
@@ -37,7 +44,16 @@ func (s *Server) Setup() {
 	}
 
 	s.router = gin.New()
-	s.router.Use(gin.Logger(), gin.Recovery())
+	s.router.Use(
+		gin.LoggerWithConfig(gin.LoggerConfig{
+			SkipPaths: []string{"/metrics"},
+		}),
+		gin.Recovery(),
+	)
+
+	s.router.GET("/metrics", gin.WrapH(s.metrics.Handler()))
+
+	s.router.Use(middleware.Metrics(s.metrics))
 
 	s.router.GET("/healthz", s.healthCheck)
 
