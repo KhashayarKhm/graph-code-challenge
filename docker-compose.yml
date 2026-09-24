@@ -1,0 +1,66 @@
+x-database-url: &database-url postgres://postgres:postgres@postgres:5432/task_manager?sslmode=disable
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: task-manager-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: task_manager
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d task_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: task-manager-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  api:
+    build: .
+    image: task-manager:local
+    container_name: task-manager-api
+    restart: unless-stopped
+    environment:
+      APP_MODE: production
+      HTTP_PORT: 8080
+      DATABASE_URL: *database-url
+      REDIS_URL: redis://redis:6379/0
+      REDIS_TTL: 60s
+      PPROF_ENABLED: ${PPROF_ENABLED:-false}
+      PPROF_PORT: 6060
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:6060:6060"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  postgres-data:

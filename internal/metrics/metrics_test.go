@@ -1,0 +1,126 @@
+package metrics_test
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"graph-code-challenge/internal/metrics"
+)
+
+type counterStub struct {
+	count int64
+	err   error
+}
+
+func (c counterStub) Count(context.Context) (int64, error) {
+	return c.count, c.err
+}
+
+func scrape(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scrape status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	return rec.Body.String()
+}
+
+func requireContains(t *testing.T, body, want string) {
+	t.Helper()
+
+	if !strings.Contains(body, want) {
+		t.Errorf("scrape output is missing %q\ngot:\n%s", want, body)
+	}
+}
+
+func TestObserveRequestExposesCounterAndHistogram(t *testing.T) {
+	m := metrics.New()
+
+	m.ObserveRequest(http.MethodGet, "/api/v1/tasks", "200", 30*time.Millisecond)
+	m.ObserveRequest(http.MethodGet, "/api/v1/tasks", "200", 70*time.Millisecond)
+	m.ObserveRequest(http.MethodPost, "/api/v1/tasks", "201", 10*time.Millisecond)
+
+	body := scrape(t, m)
+
+	requireContains(t, body, `requests_total{method="GET",path="/api/v1/tasks",status="200"} 2`)
+	requireContains(t, body, `requests_total{method="POST",path="/api/v1/tasks",status="201"} 1`)
+	requireContains(t, body, `request_latency_histogram_count{method="GET",path="/api/v1/tasks"} 2`)
+	requireContains(t, body, `request_latency_histogram_sum{method="GET",path="/api/v1/tasks"} 0.1`)
+	requireContains(t, body, `request_latency_histogram_bucket{method="GET",path="/api/v1/tasks",le="0.05"} 1`)
+}
+
+func TestRequestMetricsAreTypedCorrectly(t *testing.T) {
+	m := metrics.New()
+	m.ObserveRequest(http.MethodGet, "/healthz", "200", time.Millisecond)
+
+	body := scrape(t, m)
+
+	requireContains(t, body, "# TYPE requests_total counter")
+	requireContains(t, body, "# TYPE request_latency_histogram histogram")
+}
+
+func TestTaskGaugeIsExposed(t *testing.T) {
+	m := metrics.New()
+
+	if err := m.RefreshTaskGauge(context.Background(), counterStub{count: 17}); err != nil {
+		t.Fatalf("RefreshTaskGauge: %v", err)
+	}
+
+	body := scrape(t, m)
+
+	requireContains(t, body, "# TYPE tasks_count gauge")
+	requireContains(t, body, "tasks_count 17")
+}
+
+func TestTaskGaugeIsNotReadDuringScrape(t *testing.T) {
+	m := metrics.New()
+	stub := &mutableCounter{count: 1}
+
+	if err := m.RefreshTaskGauge(context.Background(), stub); err != nil {
+		t.Fatalf("RefreshTaskGauge: %v", err)
+	}
+
+	requireContains(t, scrape(t, m), "tasks_count 1")
+
+	stub.count = 2
+
+	requireContains(t, scrape(t, m), "tasks_count 1")
+}
+
+func TestTaskGaugeKeepsTheLastValueWhenRefreshFails(t *testing.T) {
+	m := metrics.New()
+
+	if err := m.RefreshTaskGauge(context.Background(), counterStub{count: 17}); err != nil {
+		t.Fatalf("initial RefreshTaskGauge: %v", err)
+	}
+
+	if err := m.RefreshTaskGauge(context.Background(), counterStub{err: errors.New("database is down")}); err == nil {
+		t.Fatal("RefreshTaskGauge error = nil, want database error")
+	}
+
+	requireContains(t, scrape(t, m), "tasks_count 17")
+}
+
+func TestRuntimeCollectorsAreRegistered(t *testing.T) {
+	body := scrape(t, metrics.New())
+
+	requireContains(t, body, "go_goroutines")
+	requireContains(t, body, "go_memstats_alloc_bytes")
+}
+
+type mutableCounter struct {
+	count int64
+}
+
+func (c *mutableCounter) Count(context.Context) (int64, error) {
+	return c.count, nil
+}
