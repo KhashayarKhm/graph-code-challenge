@@ -3,6 +3,7 @@ package taskvalidator
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"graph-code-challenge/internal/entity"
 	"graph-code-challenge/internal/param"
@@ -38,7 +39,7 @@ func checkTitle(title string) string {
 	switch {
 	case title == "":
 		return MsgTitleRequired
-	case len(title) > entity.MaxTaskTitleLen:
+	case utf8.RuneCountInString(title) > entity.MaxTaskTitleLen:
 		return fmt.Sprintf(MsgTitleTooLong, entity.MaxTaskTitleLen)
 	}
 
@@ -46,7 +47,7 @@ func checkTitle(title string) string {
 }
 
 func checkDescription(description string) string {
-	if len(description) > entity.MaxTaskDescriptionLen {
+	if utf8.RuneCountInString(description) > entity.MaxTaskDescriptionLen {
 		return fmt.Sprintf(MsgDescTooLong, entity.MaxTaskDescriptionLen)
 	}
 
@@ -54,7 +55,7 @@ func checkDescription(description string) string {
 }
 
 func checkAssignee(assignee string) string {
-	if len(assignee) > entity.MaxTaskAssigneeLen {
+	if utf8.RuneCountInString(assignee) > entity.MaxTaskAssigneeLen {
 		return fmt.Sprintf(MsgAssigneeTooLong, entity.MaxTaskAssigneeLen)
 	}
 

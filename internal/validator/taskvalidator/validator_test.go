@@ -71,6 +71,42 @@ func TestValidateCreateRequest(t *testing.T) {
 	}
 }
 
+func TestValidateCreateRequestCountsUnicodeCharacters(t *testing.T) {
+	tests := map[string]struct {
+		req        param.CreateTaskRequest
+		wantFields []string
+	}{
+		"title at max": {
+			req: param.CreateTaskRequest{Title: strings.Repeat("ش", entity.MaxTaskTitleLen)},
+		},
+		"title over max": {
+			req:        param.CreateTaskRequest{Title: strings.Repeat("ش", entity.MaxTaskTitleLen+1)},
+			wantFields: []string{"title"},
+		},
+		"description at max": {
+			req: param.CreateTaskRequest{Title: "valid", Description: strings.Repeat("ش", entity.MaxTaskDescriptionLen)},
+		},
+		"description over max": {
+			req:        param.CreateTaskRequest{Title: "valid", Description: strings.Repeat("ش", entity.MaxTaskDescriptionLen+1)},
+			wantFields: []string{"description"},
+		},
+		"assignee at max": {
+			req: param.CreateTaskRequest{Title: "valid", Assignee: strings.Repeat("ش", entity.MaxTaskAssigneeLen)},
+		},
+		"assignee over max": {
+			req:        param.CreateTaskRequest{Title: "valid", Assignee: strings.Repeat("ش", entity.MaxTaskAssigneeLen+1)},
+			wantFields: []string{"assignee"},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			fields, err := taskvalidator.New().ValidateCreateRequest(tc.req)
+			assertFields(t, fields, err, tc.wantFields)
+		})
+	}
+}
+
 func ptr[T any](value T) *T {
 	return &value
 }
