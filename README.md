@@ -290,6 +290,9 @@ layer above the repository knows caching exists — it is composed in `main.go` 
 nowhere else. Set `REDIS_URL` to enable it; leave it empty and the API talks
 straight to Postgres.
 
+A standalone Persian explanation of the list invalidation design is available in
+[`docs/redis-list-cache-invalidation-fa.md`](docs/redis-list-cache-invalidation-fa.md).
+
 Single tasks are trivial to invalidate: one key per id (`task:{id}`), dropped on
 that id's update or delete.
 
@@ -303,21 +306,21 @@ never in). Scanning the keyspace on every write is O(keyspace); a reverse index 
 own TTL bookkeeping, and a bug in it serves silently wrong data indefinitely.
 
 So this implementation doesn't look for the keys — it **orphans** them. Each page
-key carries a generation read from `tasks:list:gen`:
+key carries an opaque generation token read from `tasks:list:gen`:
 
 ```
 tasks:list:{gen}:{status}:{assignee}:{cursor}:{limit}
 ```
 
-Any write `INCR`s that counter. Nothing is enumerated and nothing is deleted; the
-old keys simply become unreachable, because no later read will ever construct a
-key with the previous generation again. They fall out on their own TTL.
+Any write replaces that token with a fresh cryptographically random value.
+Nothing is enumerated and nothing is deleted; old keys simply become unreachable
+because no later read constructs a key with a previous token. They fall out on
+their own TTL.
 
-Every key expires, the counter included. Pages live for `REDIS_TTL` (default 60s);
-the counter lives ten times that, because it has to outlive the pages it stamped —
-if it expired first it would reset to 0 while generation-0 pages were still alive
-and bring them back. `INCR` doesn't refresh a TTL, so the `EXPIRE` travels with it
-in one pipelined round trip.
+Every key expires. Pages live for `REDIS_TTL` (default 60s), while the generation
+token lives ten times that. If Redis evicts the token first under `allkeys-lru`,
+the next list read atomically creates a fresh random token rather than resetting
+to a reusable value, so an abandoned page cannot become reachable again.
 
 Every cache operation is best-effort: a Redis error makes a read fall through to
 Postgres and a write proceed anyway, because a cache must never be able to take
@@ -509,7 +512,7 @@ The SQL is embedded in the binary, so the command is self-contained. It reads
 | Soft deletion | Deleted tasks disappear from API operations and metrics without destroying data. A production system would need a retention or purge job to prevent indefinite table growth. |
 | String-backed status column | Adding a new status requires an application change rather than a PostgreSQL enum migration. Direct database writes can bypass application validation. |
 | No audit timestamps in API responses | `created_at`, `updated_at` and `deleted_at` remain persistence details, keeping the domain/API small but making them unavailable to clients. |
-| Generation-based list cache invalidation | One Redis increment invalidates every cached page safely, but over-invalidates unrelated filters and performs poorly for write-heavy workloads. |
+| Generation-based list cache invalidation | Replacing one Redis token invalidates every cached page safely, but over-invalidates unrelated filters and performs poorly for write-heavy workloads. |
 | Background-refreshed task gauge | Prometheus scrapes never query PostgreSQL, and the last successful value survives a temporary refresh failure. The metric can lag the source of truth by up to the 15-second refresh interval. |
 | Request-ID correlation | Logs for one request can be located without operating a tracing backend. This is not distributed tracing and provides no spans, sampling or cross-service propagation. |
 

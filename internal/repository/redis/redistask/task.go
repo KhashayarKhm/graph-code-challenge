@@ -31,11 +31,20 @@ const (
 	countInvalidationLimit = countLockTTL + time.Second
 )
 
-var releaseCountLockScript = goredis.NewScript(`
+var (
+	releaseCountLockScript = goredis.NewScript(`
 if redis.call("GET", KEYS[1]) == ARGV[1] then
     return redis.call("DEL", KEYS[1])
 end
 return 0`)
+	listGenerationScript = goredis.NewScript(`
+local generation = redis.call("GET", KEYS[1])
+if generation then
+    return generation
+end
+redis.call("PSETEX", KEYS[1], ARGV[2], ARGV[1])
+return ARGV[1]`)
+)
 
 type Repository interface {
 	Create(ctx context.Context, task entity.Task) (entity.Task, error)
@@ -218,14 +227,20 @@ func (d *DB) releaseCountLock(ctx context.Context, token string) {
 }
 
 func (d *DB) listKey(ctx context.Context, req param.ListTasksRequest) string {
-	generation, err := d.conn.Client().Get(ctx, ListGenKey).Int64()
-	if err != nil && !errors.Is(err, goredis.Nil) {
+	generation, err := listGenerationScript.Run(
+		ctx,
+		d.conn.Client(),
+		[]string{ListGenKey},
+		rand.Text(),
+		max((d.ttl*generationTTLFactor).Milliseconds(), int64(1)),
+	).Text()
+	if err != nil {
 		d.log.Warn(ctx, "cache operation failed", "operation", "get_list_generation", "error", err)
 
 		return ""
 	}
 
-	return fmt.Sprintf("%s%d:%s:%s:%d:%d",
+	return fmt.Sprintf("%s%s:%s:%s:%d:%d",
 		ListKeyPrefix, generation, req.Status, url.QueryEscape(req.Assignee), req.Cursor, req.Limit)
 }
 
@@ -271,10 +286,7 @@ func (d *DB) evict(ctx context.Context, id int64) {
 func (d *DB) retireLists(ctx context.Context) {
 	ctx = context.WithoutCancel(ctx)
 
-	pipe := d.conn.Client().TxPipeline()
-	pipe.Incr(ctx, ListGenKey)
-	pipe.Expire(ctx, ListGenKey, d.ttl*generationTTLFactor)
-	if _, err := pipe.Exec(ctx); err != nil {
+	if err := d.conn.Client().Set(ctx, ListGenKey, rand.Text(), d.ttl*generationTTLFactor).Err(); err != nil {
 		d.log.Warn(ctx, "cache operation failed", "operation", "retire_lists", "error", err)
 	}
 }

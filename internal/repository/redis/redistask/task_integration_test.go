@@ -323,6 +323,55 @@ func TestListKeysAreFilterSpecific(t *testing.T) {
 	}
 }
 
+func TestEvictedListGenerationDoesNotExposeRetiredPage(t *testing.T) {
+	oldTasks := []entity.Task{{ID: 1, Title: "before"}}
+	newTasks := []entity.Task{{ID: 1, Title: "after"}}
+	stub := &stubRepo{task: newTasks[0], tasks: oldTasks}
+	repo, _ := newCache(t, stub)
+	req := newListRequest()
+
+	if _, err := sharedConn.Client().Del(context.Background(), redistask.ListGenKey).Result(); err != nil {
+		t.Fatalf("clear list generation: %v", err)
+	}
+
+	if _, err := repo.List(context.Background(), req); err != nil {
+		t.Fatalf("warm old page: %v", err)
+	}
+
+	oldGeneration, err := sharedConn.Client().Get(context.Background(), redistask.ListGenKey).Result()
+	if err != nil {
+		t.Fatalf("read old list generation: %v", err)
+	}
+
+	if _, err := repo.Update(context.Background(), param.UpdateTaskRequest{ID: 1}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	stub.tasks = newTasks
+
+	if _, err := sharedConn.Client().Del(context.Background(), redistask.ListGenKey).Result(); err != nil {
+		t.Fatalf("evict list generation: %v", err)
+	}
+
+	got, err := repo.List(context.Background(), req)
+	if err != nil {
+		t.Fatalf("list after generation eviction: %v", err)
+	}
+	if len(got) != 1 || got[0] != newTasks[0] {
+		t.Errorf("list after generation eviction = %+v, want %+v", got, newTasks)
+	}
+	if stub.listCalls != 2 {
+		t.Errorf("repository lists = %d, want 2 (retired page must remain unreachable)", stub.listCalls)
+	}
+
+	newGeneration, err := sharedConn.Client().Get(context.Background(), redistask.ListGenKey).Result()
+	if err != nil {
+		t.Fatalf("read new list generation: %v", err)
+	}
+	if newGeneration == oldGeneration {
+		t.Errorf("list generation was reused after eviction: %q", newGeneration)
+	}
+}
+
 func TestWritesRetireEveryCachedList(t *testing.T) {
 	testCases := []struct {
 		name  string
