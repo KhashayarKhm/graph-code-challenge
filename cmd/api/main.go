@@ -13,6 +13,8 @@ import (
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
 	"graph-code-challenge/internal/repository/postgres"
 	"graph-code-challenge/internal/repository/postgres/postgrestask"
+	"graph-code-challenge/internal/repository/redis"
+	"graph-code-challenge/internal/repository/redis/redistask"
 	"graph-code-challenge/internal/service/taskservice"
 	"graph-code-challenge/internal/validator/taskvalidator"
 )
@@ -38,7 +40,21 @@ func run() error {
 	}
 	defer db.Close()
 
-	taskSvc := taskservice.New(postgrestask.New(db))
+	var repo taskservice.Repository = postgrestask.New(db)
+
+	if cfg.RedisURL != "" {
+		cache, err := redis.New(context.Background(), cfg.RedisURL)
+		if err != nil {
+			return err
+		}
+		defer cache.Close()
+
+		repo = redistask.New(repo, cache, cfg.RedisTTL)
+
+		fmt.Println("cache-aside enabled, ttl", cfg.RedisTTL)
+	}
+
+	taskSvc := taskservice.New(repo)
 	handler := taskhandler.New(taskSvc, taskvalidator.New())
 
 	server := httpserver.New(cfg, handler)

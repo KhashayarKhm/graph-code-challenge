@@ -24,7 +24,7 @@ services:
     image: redis:8-alpine
     container_name: task-manager-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "6379:6379"
     healthcheck:
@@ -43,6 +43,8 @@ services:
       APP_MODE: production
       HTTP_PORT: 8080
       DATABASE_URL: *database-url
+      REDIS_URL: redis://redis:6379/0
+      REDIS_TTL: 60s
     ports:
       - "8080:8080"
     depends_on:

@@ -105,7 +105,7 @@ func reportVersion(m *migrator.Migrator) error {
 
 	if dirty {
 		fmt.Println("WARNING: schema is dirty — a migration failed partway.")
-		fmt.Println("Repair the database by hand, then run: migrate force <version>")
+		fmt.Println("Repair the database by hand, then clear the dirty flag in schema_migrations.")
 	}
 
 	return nil

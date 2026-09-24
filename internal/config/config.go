@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -26,12 +27,17 @@ func (am AppMode) IsValid() bool {
 	}
 }
 
-const DefaultEnvFile = ".env"
+const (
+	DefaultEnvFile  = ".env"
+	DefaultRedisTTL = time.Minute
+)
 
 type Config struct {
 	AppMode     AppMode
 	HTTPPort    int
 	DatabaseURL string
+	RedisURL    string
+	RedisTTL    time.Duration
 }
 
 func Load() (Config, error) {
@@ -54,10 +60,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	redisTTL, err := envDuration("REDIS_TTL", DefaultRedisTTL)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		AppMode:     mode,
 		HTTPPort:    port,
 		DatabaseURL: envStr("DATABASE_URL", ""),
+		RedisURL:    envStr("REDIS_URL", ""),
+		RedisTTL:    redisTTL,
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -78,6 +91,10 @@ func (c Config) validate() error {
 
 	if c.HTTPPort < 1 || c.HTTPPort > 65535 {
 		return fmt.Errorf("config: HTTP_PORT must be between 1 and 65535, got %d", c.HTTPPort)
+	}
+
+	if c.RedisURL != "" && c.RedisTTL <= 0 {
+		return fmt.Errorf("config: REDIS_TTL must be positive, got %s", c.RedisTTL)
 	}
 
 	return nil
@@ -114,6 +131,20 @@ func envInt(key string, def int) (int, error) {
 	value, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("config: %s must be an integer, got %q", key, raw)
+	}
+
+	return value, nil
+}
+
+func envDuration(key string, def time.Duration) (time.Duration, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be a duration such as 60s or 5m, got %q", key, raw)
 	}
 
 	return value, nil
