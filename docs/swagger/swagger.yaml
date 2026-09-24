@@ -1,0 +1,322 @@
+basePath: /
+definitions:
+  entity.TaskStatus:
+    enum:
+    - pending
+    - in_progress
+    - done
+    type: string
+    x-enum-varnames:
+    - TaskStatusPending
+    - TaskStatusInProgress
+    - TaskStatusDone
+  httpserver.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+    type: object
+  param.CreateTaskRequest:
+    properties:
+      assignee:
+        example: alex
+        maxLength: 100
+        type: string
+      description:
+        example: Generate and verify the Swagger specification
+        maxLength: 2000
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/entity.TaskStatus'
+        enum:
+        - pending
+        - in_progress
+        - done
+        example: pending
+      title:
+        example: Document the API
+        maxLength: 200
+        minLength: 1
+        type: string
+    required:
+    - title
+    type: object
+  param.CreateTaskResponse:
+    properties:
+      task:
+        $ref: '#/definitions/param.TaskInfo'
+    type: object
+  param.GetTaskResponse:
+    properties:
+      task:
+        $ref: '#/definitions/param.TaskInfo'
+    type: object
+  param.ListTasksResponse:
+    properties:
+      has_more:
+        type: boolean
+      next_cursor:
+        type: integer
+      tasks:
+        items:
+          $ref: '#/definitions/param.TaskInfo'
+        type: array
+    type: object
+  param.TaskInfo:
+    properties:
+      assignee:
+        example: alex
+        type: string
+      description:
+        example: Generate and verify the Swagger specification
+        type: string
+      id:
+        example: 42
+        type: integer
+      status:
+        enum:
+        - pending
+        - in_progress
+        - done
+        example: in_progress
+        type: string
+      title:
+        example: Document the API
+        type: string
+    type: object
+  param.UpdateTaskRequest:
+    properties:
+      assignee:
+        example: sam
+        maxLength: 100
+        type: string
+      description:
+        example: Review and publish the generated specification
+        maxLength: 2000
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/entity.TaskStatus'
+        enum:
+        - pending
+        - in_progress
+        - done
+        example: done
+      title:
+        example: Publish the API docs
+        maxLength: 200
+        minLength: 1
+        type: string
+    type: object
+  param.UpdateTaskResponse:
+    properties:
+      task:
+        $ref: '#/definitions/param.TaskInfo'
+    type: object
+  taskhandler.ErrorResponse:
+    properties:
+      errors:
+        additionalProperties:
+          type: string
+        type: object
+      message:
+        example: invalid input
+        type: string
+    type: object
+info:
+  contact: {}
+  description: REST API for creating, reading, updating, listing and soft-deleting
+    tasks.
+  title: Task Manager API
+  version: "1.0"
+paths:
+  /api/v1/tasks:
+    get:
+      description: Lists tasks in descending ID order using cursor pagination. Limits
+        above 50 are clamped to 50.
+      parameters:
+      - description: Filter by status
+        enum:
+        - pending
+        - in_progress
+        - done
+        in: query
+        name: status
+        type: string
+      - description: Filter by assignee
+        in: query
+        maxLength: 100
+        name: assignee
+        type: string
+      - description: Return tasks with IDs below this cursor
+        in: query
+        minimum: 1
+        name: cursor
+        type: integer
+      - default: 20
+        description: Page size
+        in: query
+        maximum: 50
+        minimum: 1
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/param.ListTasksResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+      summary: List tasks
+      tags:
+      - tasks
+    post:
+      consumes:
+      - application/json
+      description: Creates a task. An omitted status defaults to pending.
+      parameters:
+      - description: Task to create
+        in: body
+        name: task
+        required: true
+        schema:
+          $ref: '#/definitions/param.CreateTaskRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/param.CreateTaskResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+      summary: Create a task
+      tags:
+      - tasks
+  /api/v1/tasks/{id}:
+    delete:
+      description: Soft-deletes a task.
+      parameters:
+      - description: Task ID
+        in: path
+        minimum: 1
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+      summary: Delete a task
+      tags:
+      - tasks
+    get:
+      parameters:
+      - description: Task ID
+        in: path
+        minimum: 1
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/param.GetTaskResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+      summary: Get a task
+      tags:
+      - tasks
+    patch:
+      consumes:
+      - application/json
+      description: Partially updates only the fields present in the request body.
+      parameters:
+      - description: Task ID
+        in: path
+        minimum: 1
+        name: id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: task
+        required: true
+        schema:
+          $ref: '#/definitions/param.UpdateTaskRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/param.UpdateTaskResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/taskhandler.ErrorResponse'
+      summary: Update a task
+      tags:
+      - tasks
+  /healthz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httpserver.HealthResponse'
+      summary: Check service health
+      tags:
+      - health
+schemes:
+- http
+swagger: "2.0"

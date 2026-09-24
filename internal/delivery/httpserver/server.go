@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 
+	_ "graph-code-challenge/docs/swagger"
 	"graph-code-challenge/internal/config"
 	"graph-code-challenge/internal/delivery/httpserver/middleware"
 	"graph-code-challenge/internal/delivery/httpserver/taskhandler"
@@ -24,6 +27,10 @@ const (
 type Metrics interface {
 	middleware.Recorder
 	Handler() http.Handler
+}
+
+type HealthResponse struct {
+	Status string `json:"status" example:"ok"`
 }
 
 type Server struct {
@@ -52,6 +59,7 @@ func (s *Server) Setup() {
 	)
 
 	s.router.GET("/metrics", gin.WrapH(s.metrics.Handler()))
+	s.router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	s.router.Use(middleware.Metrics(s.metrics))
 
@@ -93,6 +101,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// healthCheck godoc
+// @Summary Check service health
+// @Tags health
+// @Produce json
+// @Success 200 {object} HealthResponse
+// @Router /healthz [get]
 func (s *Server) healthCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, HealthResponse{Status: "ok"})
 }

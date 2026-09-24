@@ -59,10 +59,21 @@ func (h Handler) SetRoutes(rg *gin.RouterGroup) {
 }
 
 type ErrorResponse struct {
-	Message string            `json:"message"`
-	Errors  map[string]string `json:"errors,omitempty"`
+	Message string            `json:"message" example:"invalid input"`
+	Errors  map[string]string `json:"errors,omitempty" swaggertype:"object,string"`
 }
 
+// create godoc
+// @Summary Create a task
+// @Description Creates a task. An omitted status defaults to pending.
+// @Tags tasks
+// @Accept json
+// @Produce json
+// @Param task body param.CreateTaskRequest true "Task to create"
+// @Success 201 {object} param.CreateTaskResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/tasks [post]
 func (h Handler) create(c *gin.Context) {
 	var req param.CreateTaskRequest
 
@@ -86,6 +97,16 @@ func (h Handler) create(c *gin.Context) {
 	c.JSON(http.StatusCreated, resp)
 }
 
+// get godoc
+// @Summary Get a task
+// @Tags tasks
+// @Produce json
+// @Param id path int true "Task ID" minimum(1)
+// @Success 200 {object} param.GetTaskResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/tasks/{id} [get]
 func (h Handler) get(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
@@ -102,6 +123,19 @@ func (h Handler) get(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// list godoc
+// @Summary List tasks
+// @Description Lists tasks in descending ID order using cursor pagination. Limits above 50 are clamped to 50.
+// @Tags tasks
+// @Produce json
+// @Param status query string false "Filter by status" Enums(pending,in_progress,done)
+// @Param assignee query string false "Filter by assignee" maxlength(100)
+// @Param cursor query int false "Return tasks with IDs below this cursor" minimum(1)
+// @Param limit query int false "Page size" default(20) minimum(1) maximum(50)
+// @Success 200 {object} param.ListTasksResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/tasks [get]
 func (h Handler) list(c *gin.Context) {
 	var req param.ListTasksRequest
 
@@ -125,6 +159,19 @@ func (h Handler) list(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// update godoc
+// @Summary Update a task
+// @Description Partially updates only the fields present in the request body.
+// @Tags tasks
+// @Accept json
+// @Produce json
+// @Param id path int true "Task ID" minimum(1)
+// @Param task body param.UpdateTaskRequest true "Fields to update"
+// @Success 200 {object} param.UpdateTaskResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/tasks/{id} [patch]
 func (h Handler) update(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
@@ -155,6 +202,16 @@ func (h Handler) update(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// delete godoc
+// @Summary Delete a task
+// @Description Soft-deletes a task.
+// @Tags tasks
+// @Param id path int true "Task ID" minimum(1)
+// @Success 204 "No Content"
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/tasks/{id} [delete]
 func (h Handler) delete(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {

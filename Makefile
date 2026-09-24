@@ -2,7 +2,7 @@ TEST_ENV_FILE ?= $(CURDIR)/.env.test
 COVERAGE_FILE ?= coverage.out
 COVER_PKGS := ./internal/...
 
-.PHONY: help build run vet test test-unit test-integration coverage coverage-html load-test pprof-cpu pprof-heap
+.PHONY: help build run vet test test-unit test-integration coverage coverage-html generate-docs load-test pprof-cpu pprof-heap
 
 help:
 	@echo "build             compile every package"
@@ -13,6 +13,7 @@ help:
 	@echo "test              test-unit then test-integration"
 	@echo "coverage          merged unit + integration profile, prints the total"
 	@echo "coverage-html     open the line-by-line coverage report"
+	@echo "generate-docs     regenerate Swagger documentation"
 	@echo "load-test         run the k6 task workload against BASE_URL"
 	@echo "pprof-cpu         capture a 30-second CPU profile"
 	@echo "pprof-heap        capture a heap profile"
@@ -45,6 +46,11 @@ coverage:
 
 coverage-html: coverage
 	go tool cover -html=$(COVERAGE_FILE)
+
+generate-docs:
+	go tool swag init -g main.go \
+		-d cmd/api,internal/delivery/httpserver,internal/delivery/httpserver/taskhandler,internal/param,internal/entity \
+		-o docs/swagger --parseInternal
 
 load-test:
 	k6 run -e BASE_URL=$(or $(BASE_URL),http://localhost:8080) loadtest/k6/tasks_load_test.js

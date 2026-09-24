@@ -39,6 +39,11 @@ type serverResult struct {
 	err  error
 }
 
+// @title Task Manager API
+// @version 1.0
+// @description REST API for creating, reading, updating, listing and soft-deleting tasks.
+// @BasePath /
+// @schemes http
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

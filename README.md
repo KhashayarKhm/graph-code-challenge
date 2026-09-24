@@ -32,6 +32,26 @@ compose healthcheck cannot be a `wget`/`curl` one-liner; a third tiny binary,
 Rebuild after a code change with `docker compose up --build -d api`, and tear the
 stack down with `docker compose down` (add `-v` to drop the database volume too).
 
+## API documentation
+
+With the API running, Swagger UI is available at:
+
+```text
+http://localhost:8080/swagger/index.html
+```
+
+The machine-readable Swagger 2.0 specification is served at
+`http://localhost:8080/swagger/doc.json`. Generated copies are committed as
+`docs/swagger/swagger.json` and `docs/swagger/swagger.yaml`, so the API contract
+can also be read without running the service.
+
+After changing an endpoint, request type or response type, regenerate all three
+documentation artifacts with:
+
+```sh
+make generate-docs
+```
+
 ## Caching
 
 `GET /tasks/:id` and `GET /tasks` are served through a cache-aside layer in
