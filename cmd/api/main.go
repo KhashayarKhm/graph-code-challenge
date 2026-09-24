@@ -25,7 +25,11 @@ import (
 	"graph-code-challenge/internal/validator/taskvalidator"
 )
 
-const shutdownTimeout = 10 * time.Second
+const (
+	shutdownTimeout          = 10 * time.Second
+	taskCountRefreshInterval = 15 * time.Second
+	taskCountRefreshTimeout  = 2 * time.Second
+)
 
 type managedServer interface {
 	Serve() error
@@ -86,9 +90,6 @@ func run(log logger.Logger) error {
 	handler := taskhandler.New(taskSvc, taskvalidator.New(), log)
 
 	appMetrics := metrics.New()
-	if err := appMetrics.RegisterTaskGauge(taskSvc); err != nil {
-		return err
-	}
 
 	server := httpserver.New(cfg, handler, appMetrics, log)
 	server.Setup()
@@ -100,6 +101,8 @@ func run(log logger.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go refreshTaskGauge(ctx, log, appMetrics, taskSvc)
 
 	serveResult := make(chan serverResult, len(servers))
 	for _, current := range servers {
@@ -152,4 +155,29 @@ func run(log logger.Logger) error {
 	log.Info(context.Background(), "shutdown complete")
 
 	return nil
+}
+
+func refreshTaskGauge(ctx context.Context, log logger.Logger, appMetrics *metrics.Metrics, reader metrics.TaskCountReader) {
+	refresh := func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, taskCountRefreshTimeout)
+		defer cancel()
+
+		if err := appMetrics.RefreshTaskGauge(refreshCtx, reader); err != nil && ctx.Err() == nil {
+			log.Warn(ctx, "task count metric refresh failed", "error", err)
+		}
+	}
+
+	refresh()
+
+	ticker := time.NewTicker(taskCountRefreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			refresh()
+		case <-ctx.Done():
+			return
+		}
+	}
 }

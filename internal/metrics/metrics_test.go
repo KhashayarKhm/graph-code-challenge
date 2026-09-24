@@ -71,8 +71,8 @@ func TestRequestMetricsAreTypedCorrectly(t *testing.T) {
 func TestTaskGaugeIsExposed(t *testing.T) {
 	m := metrics.New()
 
-	if err := m.RegisterTaskGauge(counterStub{count: 17}); err != nil {
-		t.Fatalf("RegisterTaskGauge: %v", err)
+	if err := m.RefreshTaskGauge(context.Background(), counterStub{count: 17}); err != nil {
+		t.Fatalf("RefreshTaskGauge: %v", err)
 	}
 
 	body := scrape(t, m)
@@ -81,29 +81,33 @@ func TestTaskGaugeIsExposed(t *testing.T) {
 	requireContains(t, body, "tasks_count 17")
 }
 
-func TestTaskGaugeIsReadOnEveryScrape(t *testing.T) {
+func TestTaskGaugeIsNotReadDuringScrape(t *testing.T) {
 	m := metrics.New()
 	stub := &mutableCounter{count: 1}
 
-	if err := m.RegisterTaskGauge(stub); err != nil {
-		t.Fatalf("RegisterTaskGauge: %v", err)
+	if err := m.RefreshTaskGauge(context.Background(), stub); err != nil {
+		t.Fatalf("RefreshTaskGauge: %v", err)
 	}
 
 	requireContains(t, scrape(t, m), "tasks_count 1")
 
 	stub.count = 2
 
-	requireContains(t, scrape(t, m), "tasks_count 2")
+	requireContains(t, scrape(t, m), "tasks_count 1")
 }
 
-func TestTaskGaugeReportsNaNWhenTheQueryFails(t *testing.T) {
+func TestTaskGaugeKeepsTheLastValueWhenRefreshFails(t *testing.T) {
 	m := metrics.New()
 
-	if err := m.RegisterTaskGauge(counterStub{err: errors.New("database is down")}); err != nil {
-		t.Fatalf("RegisterTaskGauge: %v", err)
+	if err := m.RefreshTaskGauge(context.Background(), counterStub{count: 17}); err != nil {
+		t.Fatalf("initial RefreshTaskGauge: %v", err)
 	}
 
-	requireContains(t, scrape(t, m), "tasks_count NaN")
+	if err := m.RefreshTaskGauge(context.Background(), counterStub{err: errors.New("database is down")}); err == nil {
+		t.Fatal("RefreshTaskGauge error = nil, want database error")
+	}
+
+	requireContains(t, scrape(t, m), "tasks_count 17")
 }
 
 func TestRuntimeCollectorsAreRegistered(t *testing.T) {

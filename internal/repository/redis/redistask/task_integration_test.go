@@ -83,9 +83,12 @@ func requireTestRedisDB(rawURL string) error {
 }
 
 type stubRepo struct {
-	task  entity.Task
-	tasks []entity.Task
-	err   error
+	task          entity.Task
+	tasks         []entity.Task
+	err           error
+	createStarted chan struct{}
+	countStarted  chan struct{}
+	countRelease  chan struct{}
 
 	createCalls int
 	getCalls    int
@@ -104,6 +107,9 @@ func (loggerStub) Error(context.Context, string, ...any) {}
 
 func (s *stubRepo) Create(_ context.Context, _ entity.Task) (entity.Task, error) {
 	s.createCalls++
+	if s.createStarted != nil {
+		close(s.createStarted)
+	}
 
 	return s.task, s.err
 }
@@ -134,6 +140,10 @@ func (s *stubRepo) Delete(_ context.Context, _ int64) error {
 
 func (s *stubRepo) Count(_ context.Context) (int64, error) {
 	s.countCalls++
+	if s.countStarted != nil {
+		close(s.countStarted)
+		<-s.countRelease
+	}
 
 	return int64(len(s.tasks)), s.err
 }
@@ -144,7 +154,12 @@ func newCache(t *testing.T, stub *stubRepo) (*redistask.DB, int64) {
 	id := seq.Add(1)
 
 	t.Cleanup(func() {
-		sharedConn.Client().Del(context.Background(), fmt.Sprintf("%s%d", redistask.TaskKeyPrefix, id))
+		sharedConn.Client().Del(
+			context.Background(),
+			fmt.Sprintf("%s%d", redistask.TaskKeyPrefix, id),
+			redistask.CountKey,
+			redistask.CountLockKey,
+		)
 	})
 
 	return redistask.New(stub, sharedConn, cacheTTL, loggerStub{}), id
@@ -414,7 +429,7 @@ func TestEveryCacheKeyExpires(t *testing.T) {
 	}
 }
 
-func TestCountIsNotCached(t *testing.T) {
+func TestCountServesTheSecondReadFromTheCache(t *testing.T) {
 	stub := &stubRepo{tasks: []entity.Task{{ID: 1}}}
 	repo, _ := newCache(t, stub)
 
@@ -424,7 +439,84 @@ func TestCountIsNotCached(t *testing.T) {
 		}
 	}
 
-	if stub.countCalls != 2 {
-		t.Errorf("repository counts = %d, want 2", stub.countCalls)
+	if stub.countCalls != 1 {
+		t.Errorf("repository counts = %d, want 1", stub.countCalls)
+	}
+
+	ttl, err := sharedConn.Client().TTL(context.Background(), redistask.CountKey).Result()
+	if err != nil {
+		t.Fatalf("count key ttl: %v", err)
+	}
+	if ttl <= 0 {
+		t.Errorf("count key ttl = %s, want a positive expiry", ttl)
+	}
+}
+
+func TestCreateAndDeleteAdjustCachedCount(t *testing.T) {
+	stub := &stubRepo{tasks: []entity.Task{{ID: 1}}}
+	repo, _ := newCache(t, stub)
+
+	if count, err := repo.Count(context.Background()); err != nil || count != 1 {
+		t.Fatalf("initial count = %d, %v; want 1, nil", count, err)
+	}
+
+	if _, err := repo.Create(context.Background(), entity.Task{Title: "new"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if count, err := repo.Count(context.Background()); err != nil || count != 2 {
+		t.Fatalf("count after create = %d, %v; want 2, nil", count, err)
+	}
+
+	if err := repo.Delete(context.Background(), 1); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if count, err := repo.Count(context.Background()); err != nil || count != 1 {
+		t.Fatalf("count after delete = %d, %v; want 1, nil", count, err)
+	}
+
+	if stub.countCalls != 1 {
+		t.Errorf("repository counts = %d, want 1", stub.countCalls)
+	}
+}
+
+func TestCountInitializationDoesNotOverwriteConcurrentCreate(t *testing.T) {
+	stub := &stubRepo{
+		tasks:         []entity.Task{{ID: 1}},
+		createStarted: make(chan struct{}),
+		countStarted:  make(chan struct{}),
+		countRelease:  make(chan struct{}),
+	}
+	repo, _ := newCache(t, stub)
+
+	countDone := make(chan error, 1)
+	go func() {
+		_, err := repo.Count(context.Background())
+		countDone <- err
+	}()
+
+	<-stub.countStarted
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := repo.Create(context.Background(), entity.Task{Title: "new"})
+		createDone <- err
+	}()
+
+	<-stub.createStarted
+	close(stub.countRelease)
+
+	if err := <-countDone; err != nil {
+		t.Fatalf("initial count: %v", err)
+	}
+	if err := <-createDone; err != nil {
+		t.Fatalf("concurrent create: %v", err)
+	}
+
+	count, err := repo.Count(context.Background())
+	if err != nil {
+		t.Fatalf("final count: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("final count = %d, want 2", count)
 	}
 }

@@ -2,6 +2,7 @@ package redistask
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,8 +22,31 @@ const (
 	TaskKeyPrefix = "task:"
 	ListKeyPrefix = "tasks:list:"
 	ListGenKey    = "tasks:list:gen"
+	CountKey      = "tasks:count"
+	CountLockKey  = "tasks:count:lock"
 
-	generationTTLFactor = 10
+	generationTTLFactor  = 10
+	countLockTTL         = 3 * time.Second
+	countLockRetry       = 10 * time.Millisecond
+	countAdjustmentLimit = countLockTTL + time.Second
+)
+
+var (
+	releaseCountLockScript = goredis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0`)
+	adjustCountScript = goredis.NewScript(`
+if redis.call("EXISTS", KEYS[1]) == 0 then
+    return false
+end
+local value = redis.call("INCRBY", KEYS[1], ARGV[1])
+if value < 0 then
+    redis.call("DEL", KEYS[1])
+    return false
+end
+return value`)
 )
 
 type Repository interface {
@@ -52,6 +76,7 @@ func (d *DB) Create(ctx context.Context, task entity.Task) (entity.Task, error) 
 	}
 
 	d.retireLists(ctx)
+	d.adjustCount(ctx, 1)
 
 	return created, nil
 }
@@ -113,12 +138,95 @@ func (d *DB) Delete(ctx context.Context, id int64) error {
 
 	d.evict(ctx, id)
 	d.retireLists(ctx)
+	d.adjustCount(ctx, -1)
 
 	return nil
 }
 
 func (d *DB) Count(ctx context.Context) (int64, error) {
-	return d.next.Count(ctx)
+	count, err := d.conn.Client().Get(ctx, CountKey).Int64()
+	if err == nil {
+		return count, nil
+	}
+	if !errors.Is(err, goredis.Nil) {
+		d.log.Warn(ctx, "cache operation failed", "operation", "get_count", "error", err)
+
+		return d.next.Count(ctx)
+	}
+
+	token, err := d.acquireCountLock(ctx)
+	if err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "acquire_count_lock", "error", err)
+
+		return d.next.Count(ctx)
+	}
+	defer d.releaseCountLock(ctx, token)
+
+	count, err = d.conn.Client().Get(ctx, CountKey).Int64()
+	if err == nil {
+		return count, nil
+	}
+	if !errors.Is(err, goredis.Nil) {
+		d.log.Warn(ctx, "cache operation failed", "operation", "recheck_count", "error", err)
+
+		return d.next.Count(ctx)
+	}
+
+	count, err = d.next.Count(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := d.conn.Client().Set(ctx, CountKey, count, d.ttl).Err(); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "set_count", "error", err)
+	}
+
+	return count, nil
+}
+
+func (d *DB) adjustCount(ctx context.Context, delta int64) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), countAdjustmentLimit)
+	defer cancel()
+
+	token, err := d.acquireCountLock(ctx)
+	if err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "acquire_count_lock", "error", err)
+
+		return
+	}
+	defer d.releaseCountLock(ctx, token)
+
+	if _, err := adjustCountScript.Run(ctx, d.conn.Client(), []string{CountKey}, delta).Result(); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "adjust_count", "error", err)
+	}
+}
+
+func (d *DB) acquireCountLock(ctx context.Context) (string, error) {
+	token := rand.Text()
+	ticker := time.NewTicker(countLockRetry)
+	defer ticker.Stop()
+
+	for {
+		acquired, err := d.conn.Client().SetNX(ctx, CountLockKey, token, countLockTTL).Result()
+		if err != nil {
+			return "", err
+		}
+		if acquired {
+			return token, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (d *DB) releaseCountLock(ctx context.Context, token string) {
+	if _, err := releaseCountLockScript.Run(context.WithoutCancel(ctx), d.conn.Client(), []string{CountLockKey}, token).Result(); err != nil {
+		d.log.Warn(ctx, "cache operation failed", "operation", "release_count_lock", "error", err)
+	}
 }
 
 func (d *DB) listKey(ctx context.Context, req param.ListTasksRequest) string {

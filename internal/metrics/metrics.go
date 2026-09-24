@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"context"
-	"math"
 	"net/http"
 	"time"
 
@@ -11,19 +10,23 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-const countTimeout = 2 * time.Second
-
 type TaskCountReader interface {
 	Count(ctx context.Context) (int64, error)
 }
 
 type Metrics struct {
-	registry *prometheus.Registry
-	requests *prometheus.CounterVec
-	duration *prometheus.HistogramVec
+	registry  *prometheus.Registry
+	requests  *prometheus.CounterVec
+	duration  *prometheus.HistogramVec
+	taskCount prometheus.Gauge
 }
 
 func New() *Metrics {
+	taskCount := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "tasks_count",
+		Help: "Number of tasks that have not been soft-deleted.",
+	})
+
 	m := &Metrics{
 		registry: prometheus.NewRegistry(),
 		requests: prometheus.NewCounterVec(
@@ -41,11 +44,13 @@ func New() *Metrics {
 			},
 			[]string{"method", "path"},
 		),
+		taskCount: taskCount,
 	}
 
 	m.registry.MustRegister(
 		m.requests,
 		m.duration,
+		m.taskCount,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -58,24 +63,15 @@ func (m *Metrics) ObserveRequest(method, path, status string, d time.Duration) {
 	m.duration.WithLabelValues(method, path).Observe(d.Seconds())
 }
 
-func (m *Metrics) RegisterTaskGauge(reader TaskCountReader) error {
-	return m.registry.Register(prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name: "tasks_count",
-			Help: "Number of tasks that have not been soft-deleted.",
-		},
-		func() float64 {
-			ctx, cancel := context.WithTimeout(context.Background(), countTimeout)
-			defer cancel()
+func (m *Metrics) RefreshTaskGauge(ctx context.Context, reader TaskCountReader) error {
+	count, err := reader.Count(ctx)
+	if err != nil {
+		return err
+	}
 
-			count, err := reader.Count(ctx)
-			if err != nil {
-				return math.NaN()
-			}
+	m.taskCount.Set(float64(count))
 
-			return float64(count)
-		},
-	))
+	return nil
 }
 
 func (m *Metrics) Handler() http.Handler {
