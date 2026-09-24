@@ -28,14 +28,14 @@ func New() *Metrics {
 		registry: prometheus.NewRegistry(),
 		requests: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "http_requests_total",
+				Name: "requests_total",
 				Help: "Total number of HTTP requests served, by method, route and status code.",
 			},
 			[]string{"method", "path", "status"},
 		),
 		duration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "http_request_duration_seconds",
+				Name:    "request_latency_histogram",
 				Help:    "Duration of HTTP requests in seconds, by method and route.",
 				Buckets: prometheus.DefBuckets,
 			},
@@ -61,7 +61,7 @@ func (m *Metrics) ObserveRequest(method, path, status string, d time.Duration) {
 func (m *Metrics) RegisterTaskGauge(reader TaskCountReader) error {
 	return m.registry.Register(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
-			Name: "tasks_total",
+			Name: "tasks_count",
 			Help: "Number of tasks that have not been soft-deleted.",
 		},
 		func() float64 {

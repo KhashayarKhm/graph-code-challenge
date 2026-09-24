@@ -51,11 +51,11 @@ func TestObserveRequestExposesCounterAndHistogram(t *testing.T) {
 
 	body := scrape(t, m)
 
-	requireContains(t, body, `http_requests_total{method="GET",path="/api/v1/tasks",status="200"} 2`)
-	requireContains(t, body, `http_requests_total{method="POST",path="/api/v1/tasks",status="201"} 1`)
-	requireContains(t, body, `http_request_duration_seconds_count{method="GET",path="/api/v1/tasks"} 2`)
-	requireContains(t, body, `http_request_duration_seconds_sum{method="GET",path="/api/v1/tasks"} 0.1`)
-	requireContains(t, body, `http_request_duration_seconds_bucket{method="GET",path="/api/v1/tasks",le="0.05"} 1`)
+	requireContains(t, body, `requests_total{method="GET",path="/api/v1/tasks",status="200"} 2`)
+	requireContains(t, body, `requests_total{method="POST",path="/api/v1/tasks",status="201"} 1`)
+	requireContains(t, body, `request_latency_histogram_count{method="GET",path="/api/v1/tasks"} 2`)
+	requireContains(t, body, `request_latency_histogram_sum{method="GET",path="/api/v1/tasks"} 0.1`)
+	requireContains(t, body, `request_latency_histogram_bucket{method="GET",path="/api/v1/tasks",le="0.05"} 1`)
 }
 
 func TestRequestMetricsAreTypedCorrectly(t *testing.T) {
@@ -64,8 +64,8 @@ func TestRequestMetricsAreTypedCorrectly(t *testing.T) {
 
 	body := scrape(t, m)
 
-	requireContains(t, body, "# TYPE http_requests_total counter")
-	requireContains(t, body, "# TYPE http_request_duration_seconds histogram")
+	requireContains(t, body, "# TYPE requests_total counter")
+	requireContains(t, body, "# TYPE request_latency_histogram histogram")
 }
 
 func TestTaskGaugeIsExposed(t *testing.T) {
@@ -77,8 +77,8 @@ func TestTaskGaugeIsExposed(t *testing.T) {
 
 	body := scrape(t, m)
 
-	requireContains(t, body, "# TYPE tasks_total gauge")
-	requireContains(t, body, "tasks_total 17")
+	requireContains(t, body, "# TYPE tasks_count gauge")
+	requireContains(t, body, "tasks_count 17")
 }
 
 func TestTaskGaugeIsReadOnEveryScrape(t *testing.T) {
@@ -89,11 +89,11 @@ func TestTaskGaugeIsReadOnEveryScrape(t *testing.T) {
 		t.Fatalf("RegisterTaskGauge: %v", err)
 	}
 
-	requireContains(t, scrape(t, m), "tasks_total 1")
+	requireContains(t, scrape(t, m), "tasks_count 1")
 
 	stub.count = 2
 
-	requireContains(t, scrape(t, m), "tasks_total 2")
+	requireContains(t, scrape(t, m), "tasks_count 2")
 }
 
 func TestTaskGaugeReportsNaNWhenTheQueryFails(t *testing.T) {
@@ -103,7 +103,7 @@ func TestTaskGaugeReportsNaNWhenTheQueryFails(t *testing.T) {
 		t.Fatalf("RegisterTaskGauge: %v", err)
 	}
 
-	requireContains(t, scrape(t, m), "tasks_total NaN")
+	requireContains(t, scrape(t, m), "tasks_count NaN")
 }
 
 func TestRuntimeCollectorsAreRegistered(t *testing.T) {
